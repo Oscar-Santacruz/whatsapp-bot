@@ -1,29 +1,35 @@
 require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
+const qrcode = require('qrcode-terminal')
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion
+} = require('@whiskeysockets/baileys')
 const pino = require('pino')
 
 const app = express()
 app.use(cors())
 app.use(express.json())
 
-const PORT = process.env.PORT || 3000
-const API_TOKEN = process.env.API_TOKEN || 'secure-token-123' // You should set this in Render deployment
+const PORT = process.env.PORT || 3001
+const API_TOKEN = process.env.API_TOKEN || 'test-secret-local'
 
 let sock = null
+let isConnected = false
 
 async function connectToWhatsApp() {
-    // Baileys needs a folder to store connection credentials.
-    // In Render, this folder will be deleted on every reboot unless you use a Persistent Disk.
-    // Make sure to add 'auth_info_baileys' to your Render persistent disk path if you want it to survive reboots.
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+    const { version } = await fetchLatestBaileysVersion()
 
     sock = makeWASocket({
+        version,
         auth: state,
-        printQRInTerminal: true,
-        logger: pino({ level: 'silent' }), // Suppress baileys logs unless debugging
-        browser: ['Car Sale Bot', 'Chrome', '1.0.0']
+        logger: pino({ level: 'silent' }),
+        browser: ['CarSaleBot', 'Chrome', '120.0.0'],
+        generateHighQualityLinkPreview: false,
     })
 
     sock.ev.on('creds.update', saveCreds)
@@ -32,80 +38,80 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update
 
         if (qr) {
-            console.log('\n==================================================')
-            console.log('SCAN THIS QR CODE WITH YOUR WHATSAPP TO CONNECT')
-            console.log('==================================================\n')
-            // qr terminal prints it automatically because printQRInTerminal is true
+            console.log('\n============================================================')
+            console.log('  SCAN THIS QR CODE WITH YOUR WHATSAPP TO CONNECT THE BOT')
+            console.log('============================================================\n')
+            qrcode.generate(qr, { small: true })
         }
 
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-            console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect)
+            isConnected = false
+            const statusCode = lastDisconnect?.error?.output?.statusCode
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-            // Reconnect if not logged out explicitly
+            console.log(`[WA] Connection closed (code: ${statusCode}). Reconnecting: ${shouldReconnect}`)
+
             if (shouldReconnect) {
-                connectToWhatsApp()
+                setTimeout(connectToWhatsApp, 3000)
             } else {
-                console.log('Logged out. Please delete the auth_info_baileys folder and scan QR again.')
+                console.log('[WA] Logged out. Delete auth_info_baileys folder and restart.')
             }
         } else if (connection === 'open') {
-            console.log('opened connection')
+            isConnected = true
+            console.log('[WA] ✅ WhatsApp connected! Bot ready to send messages.')
         }
     })
 }
 
 // Security Middleware
 const requireAuth = (req, res, next) => {
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headers.authorization
     if (!authHeader || authHeader !== `Bearer ${API_TOKEN}`) {
-        return res.status(401).json({ error: 'Unauthorized. Invalid API Token.' });
+        return res.status(401).json({ error: 'Unauthorized. Invalid API Token.' })
     }
-    next();
-};
+    next()
+}
 
-// API Endpoint to send messages
+// POST /send  → send a WhatsApp message
 app.post('/send', requireAuth, async (req, res) => {
     try {
         const { phone, message } = req.body
 
         if (!phone || !message) {
-            return res.status(400).json({ error: 'Missing phone or message parameter' })
+            return res.status(400).json({ error: 'Missing phone or message' })
         }
 
-        if (!sock) {
-            return res.status(503).json({ error: 'WhatsApp is not connected yet' })
+        if (!sock || !isConnected) {
+            return res.status(503).json({ error: 'WhatsApp is not connected. Scan the QR code first.' })
         }
 
-        // Format phone number to JID format used by Baileys. Example: 595981123456@s.whatsapp.net
-        // Remove +, spaces, dashes
-        const cleanPhone = phone.replace(/[\+\-\s]/g, '')
+        // Normalize phone: strip +, spaces, dashes → e.g. "595981234567"
+        const cleanPhone = phone.replace(/[\+\-\s\(\)]/g, '')
         const jid = `${cleanPhone}@s.whatsapp.net`
 
-        // Check if number exists on WhatsApp (optional but recommended)
+        // Verify the number exists on WhatsApp
         const [result] = await sock.onWhatsApp(jid)
-        if (!result || !result.exists) {
-            return res.status(404).json({ error: 'Phone number is not registered on WhatsApp' })
+        if (!result?.exists) {
+            return res.status(404).json({ error: `Phone ${cleanPhone} is not registered on WhatsApp` })
         }
 
-        // Send message
         await sock.sendMessage(result.jid, { text: message })
 
-        console.log(`Message sent to ${cleanPhone}`)
-        res.status(200).json({ success: true, message: 'Message sent successfully' })
+        console.log(`[WA] Message sent to ${cleanPhone}`)
+        res.status(200).json({ success: true })
 
     } catch (error) {
-        console.error('Error sending message:', error)
-        res.status(500).json({ error: 'Internal server error while sending message', details: error.message })
+        console.error('[WA] Error sending message:', error.message)
+        res.status(500).json({ error: error.message })
     }
 })
 
-// Health endpoint for Render
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', connected: sock !== null })
+// GET /health  → for Render health checks
+app.get('/health', (_req, res) => {
+    res.status(200).json({ status: 'ok', whatsapp_connected: isConnected })
 })
 
-// Start Express and WhatsApp
 app.listen(PORT, () => {
-    console.log(`WhatsApp API Microservice is running on port ${PORT}`)
+    console.log(`[Server] WhatsApp API running on port ${PORT}`)
     connectToWhatsApp()
 })
