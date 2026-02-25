@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Baileys requires some additional system libraries for its image processing (sharp)
 RUN apk add --no-cache \
