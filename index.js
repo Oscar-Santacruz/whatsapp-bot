@@ -1,7 +1,8 @@
 require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
-const qrcode = require('qrcode-terminal')
+const qrcode_terminal = require('qrcode-terminal')
+const qrcode_web = require('qrcode')
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -19,6 +20,7 @@ const API_TOKEN = process.env.API_TOKEN || 'test-secret-local'
 
 let sock = null
 let isConnected = false
+let currentQrCode = null
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
@@ -41,7 +43,8 @@ async function connectToWhatsApp() {
             console.log('\n============================================================')
             console.log('  SCAN THIS QR CODE WITH YOUR WHATSAPP TO CONNECT THE BOT')
             console.log('============================================================\n')
-            qrcode.generate(qr, { small: true })
+            qrcode_terminal.generate(qr, { small: true })
+            currentQrCode = qr
         }
 
         if (connection === 'close') {
@@ -55,9 +58,11 @@ async function connectToWhatsApp() {
                 setTimeout(connectToWhatsApp, 3000)
             } else {
                 console.log('[WA] Logged out. Delete auth_info_baileys folder and restart.')
+                currentQrCode = null
             }
         } else if (connection === 'open') {
             isConnected = true
+            currentQrCode = null
             console.log('[WA] ✅ WhatsApp connected! Bot ready to send messages.')
         }
     })
@@ -109,6 +114,42 @@ app.post('/send', requireAuth, async (req, res) => {
 // GET /health  → for Render health checks
 app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', whatsapp_connected: isConnected })
+})
+
+// GET /qr → renders an HTML page with the QR code
+app.get('/qr', async (_req, res) => {
+    if (isConnected) {
+        return res.send(`
+            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                <h2>WhatsApp Bot is already connected! ✅</h2>
+                <p>No QR code needed.</p>
+            </body></html>
+        `)
+    }
+
+    if (!currentQrCode) {
+        return res.send(`
+            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                <h2>QR Code not available yet.</h2>
+                <p>Please wait a moment and refresh this page.</p>
+            </body></html>
+        `)
+    }
+
+    try {
+        const qrImageBase64 = await qrcode_web.toDataURL(currentQrCode)
+        res.send(`
+            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px; background: #f0f2f5;">
+                <div style="background: white; padding: 40px; border-radius: 10px; display: inline-block; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                    <h2>Scan to connect WhatsApp Bot</h2>
+                    <img src="${qrImageBase64}" alt="WhatsApp QR Code" style="width: 300px; height: 300px;" />
+                    <p style="color: #666; font-size: 14px; margin-top: 20px;">Refresh the page if the QR expires.</p>
+                </div>
+            </body></html>
+        `)
+    } catch (err) {
+        res.status(500).send('Error generating QR code image')
+    }
 })
 
 app.listen(PORT, () => {
