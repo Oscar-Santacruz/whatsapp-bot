@@ -111,6 +111,45 @@ app.post('/send', requireAuth, async (req, res) => {
     }
 })
 
+// POST /send-document → send a PDF or other media
+app.post('/send-document', requireAuth, async (req, res) => {
+    try {
+        const { phone, file, fileName, mimetype } = req.body
+
+        if (!phone || !file || !fileName) {
+            return res.status(400).json({ error: 'Missing phone, file (base64) or fileName' })
+        }
+
+        if (!sock || !isConnected) {
+            return res.status(503).json({ error: 'WhatsApp is not connected.' })
+        }
+
+        const cleanPhone = phone.replace(/[\+\-\s\(\)]/g, '')
+        const jid = `${cleanPhone}@s.whatsapp.net`
+
+        const [result] = await sock.onWhatsApp(jid)
+        if (!result?.exists) {
+            return res.status(404).json({ error: `Phone ${cleanPhone} is not registered` })
+        }
+
+        // Convert base64 to buffer
+        const buffer = Buffer.from(file, 'base64')
+
+        await sock.sendMessage(result.jid, {
+            document: buffer,
+            fileName: fileName,
+            mimetype: mimetype || 'application/pdf'
+        })
+
+        console.log(`[WA] Document ${fileName} sent to ${cleanPhone}`)
+        res.status(200).json({ success: true })
+
+    } catch (error) {
+        console.error('[WA] Error sending document:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
 // GET /health  → for Render health checks
 app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', whatsapp_connected: isConnected })
