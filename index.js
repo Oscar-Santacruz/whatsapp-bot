@@ -10,6 +10,8 @@ const {
     fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys')
 const pino = require('pino')
+const fs = require('fs')
+const path = require('path')
 
 const app = express()
 app.use(cors())
@@ -57,8 +59,13 @@ async function connectToWhatsApp() {
             if (shouldReconnect) {
                 setTimeout(connectToWhatsApp, 3000)
             } else {
-                console.log('[WA] Logged out. Delete auth_info_baileys folder and restart.')
+                console.log('[WA] Logged out. Automatically clearing auth_info_baileys folder and restarting...')
                 currentQrCode = null
+                const authPath = path.join(__dirname, 'auth_info_baileys')
+                if (fs.existsSync(authPath)) {
+                    fs.rmSync(authPath, { recursive: true, force: true })
+                }
+                setTimeout(connectToWhatsApp, 1000) // Immediate retry after clearing
             }
         } else if (connection === 'open') {
             isConnected = true
@@ -155,6 +162,35 @@ app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', whatsapp_connected: isConnected })
 })
 
+// POST /logout → disconnect and delete session
+app.post('/logout', async (_req, res) => {
+    try {
+        if (sock) {
+            await sock.logout()
+        }
+
+        const authPath = path.join(__dirname, 'auth_info_baileys')
+        if (fs.existsSync(authPath)) {
+            fs.rmSync(authPath, { recursive: true, force: true })
+        }
+
+        isConnected = false
+        currentQrCode = null
+
+        console.log('[WA] Logged out and session cleared via web.')
+
+        // Restart connection after a short delay
+        setTimeout(() => {
+            connectToWhatsApp()
+        }, 3000)
+
+        res.status(200).json({ success: true, message: 'Logged out. Reconnecting...' })
+    } catch (error) {
+        console.error('[WA] Error during logout:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
 // GET /qr → renders an HTML page with the QR code
 app.get('/qr', async (_req, res) => {
     if (isConnected) {
@@ -162,6 +198,22 @@ app.get('/qr', async (_req, res) => {
             <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
                 <h2>WhatsApp Bot is already connected! ✅</h2>
                 <p>No QR code needed.</p>
+                <button onclick="handleLogout()" style="margin-top: 20px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                    Disconnect & Logout
+                </button>
+                <script>
+                    function handleLogout() {
+                        if (confirm('Are you sure you want to logout and clear session?')) {
+                            fetch('/logout', { method: 'POST' })
+                                .then(r => r.json())
+                                .then(data => {
+                                    alert(data.message || 'Logging out...');
+                                    location.reload();
+                                })
+                                .catch(err => alert('Error logging out'));
+                        }
+                    }
+                </script>
             </body></html>
         `)
     }
@@ -171,6 +223,23 @@ app.get('/qr', async (_req, res) => {
             <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
                 <h2>QR Code not available yet.</h2>
                 <p>Please wait a moment and refresh this page.</p>
+                <hr style="margin-top: 20px; border: none; border-top: 1px solid #eee; width: 300px; margin-left: auto; margin-right: auto;">
+                <button onclick="handleLogout()" style="margin-top: 10px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                    Force Reset Session
+                </button>
+                <script>
+                    function handleLogout() {
+                        if (confirm('This will clear the current session. Proceed?')) {
+                            fetch('/logout', { method: 'POST' })
+                                .then(r => r.json())
+                                .then(data => {
+                                    alert(data.message || 'Resetting...');
+                                    location.reload();
+                                })
+                                .catch(err => alert('Error resetting'));
+                        }
+                    }
+                </script>
             </body></html>
         `)
     }
@@ -183,6 +252,23 @@ app.get('/qr', async (_req, res) => {
                     <h2>Scan to connect WhatsApp Bot</h2>
                     <img src="${qrImageBase64}" alt="WhatsApp QR Code" style="width: 300px; height: 300px;" />
                     <p style="color: #666; font-size: 14px; margin-top: 20px;">Refresh the page if the QR expires.</p>
+                    <hr style="margin-top: 20px; border: none; border-top: 1px solid #eee;">
+                    <button onclick="handleLogout()" style="margin-top: 10px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                        Reset Session & Try Again
+                    </button>
+                    <script>
+                        function handleLogout() {
+                            if (confirm('This will clear the current session. Proceed?')) {
+                                fetch('/logout', { method: 'POST' })
+                                    .then(r => r.json())
+                                    .then(data => {
+                                        alert(data.message || 'Resetting...');
+                                        location.reload();
+                                    })
+                                    .catch(err => alert('Error resetting'));
+                            }
+                        }
+                    </script>
                 </div>
             </body></html>
         `)
