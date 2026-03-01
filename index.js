@@ -15,20 +15,31 @@ const path = require('path')
 
 const app = express()
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '50mb' }))
 
 const PORT = process.env.PORT || 3001
 const API_TOKEN = process.env.API_TOKEN || 'test-secret-local'
 
-let sock = null
-let isConnected = false
-let currentQrCode = null
+// Multi-tenant sessions
+const sessions = new Map()
+// session structure: { sock, isConnected, qr }
 
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+const getAuthPath = (orgId) => path.join(__dirname, `auth_info_baileys_${orgId}`)
+
+async function connectToWhatsApp(orgId) {
+    if (!orgId) return;
+
+    // Initialize session object immediately to prevent double connection attempts
+    if (!sessions.has(orgId)) {
+        sessions.set(orgId, { sock: null, isConnected: false, qr: null })
+    }
+    const session = sessions.get(orgId)
+
+    const authFolder = getAuthPath(orgId)
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder)
     const { version } = await fetchLatestBaileysVersion()
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
@@ -36,42 +47,54 @@ async function connectToWhatsApp() {
         generateHighQualityLinkPreview: false,
     })
 
+    session.sock = sock
+
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update
 
         if (qr) {
-            console.log('\n============================================================')
-            console.log('  SCAN THIS QR CODE WITH YOUR WHATSAPP TO CONNECT THE BOT')
-            console.log('============================================================\n')
-            qrcode_terminal.generate(qr, { small: true })
-            currentQrCode = qr
+            console.log(`\n=== [Org: ${orgId}] SCAN THIS QR CODE ===\n`)
+            // qrcode_terminal.generate(qr, { small: true })
+            session.qr = qr
         }
 
         if (connection === 'close') {
-            isConnected = false
+            session.isConnected = false
             const statusCode = lastDisconnect?.error?.output?.statusCode
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-            console.log(`[WA] Connection closed (code: ${statusCode}). Reconnecting: ${shouldReconnect}`)
+            console.log(`[WA - ${orgId}] Connection closed (code: ${statusCode}). Reconnecting: ${shouldReconnect}`)
 
             if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 3000)
+                setTimeout(() => connectToWhatsApp(orgId), 3000)
             } else {
-                console.log('[WA] Logged out. Automatically clearing auth_info_baileys folder and restarting...')
-                currentQrCode = null
-                const authPath = path.join(__dirname, 'auth_info_baileys')
-                if (fs.existsSync(authPath)) {
-                    fs.rmSync(authPath, { recursive: true, force: true })
+                console.log(`[WA - ${orgId}] Logged out. Automatically clearing auth folder and removing session...`)
+                session.qr = null
+                session.sock = null // Delete socket reference
+                sessions.delete(orgId)
+                if (fs.existsSync(authFolder)) {
+                    fs.rmSync(authFolder, { recursive: true, force: true })
                 }
-                setTimeout(connectToWhatsApp, 1000) // Immediate retry after clearing
             }
         } else if (connection === 'open') {
-            isConnected = true
-            currentQrCode = null
-            console.log('[WA] ✅ WhatsApp connected! Bot ready to send messages.')
+            session.isConnected = true
+            session.qr = null
+            console.log(`[WA - ${orgId}] ✅ WhatsApp connected! Bot ready.`)
         }
+    })
+}
+
+// Startup routine: automatically connect existing folders
+function loadExistingSessions() {
+    const files = fs.readdirSync(__dirname)
+    const orgFolders = files.filter(f => f.startsWith('auth_info_baileys_'))
+
+    orgFolders.forEach(folder => {
+        const orgId = folder.replace('auth_info_baileys_', '')
+        console.log(`[WA] Auto-connecting saved session for Org ID: ${orgId}`)
+        connectToWhatsApp(orgId)
     })
 }
 
@@ -84,17 +107,67 @@ const requireAuth = (req, res, next) => {
     next()
 }
 
+// POST /api/connect -> Init session for orgId
+app.post('/api/connect', requireAuth, async (req, res) => {
+    try {
+        const { orgId } = req.body
+        if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+
+        if (sessions.has(orgId)) {
+            const session = sessions.get(orgId)
+            if (session.isConnected) {
+                return res.status(200).json({ status: 'connected', message: 'Already connected' })
+            } else {
+                return res.status(200).json({ status: 'connecting', message: 'Already connecting, QR might be available.' })
+            }
+        }
+
+        await connectToWhatsApp(orgId)
+        res.status(200).json({ status: 'connecting', message: 'Triggered connection.' })
+    } catch (e) {
+        res.status(500).json({ error: e.message })
+    }
+})
+
+// GET /api/status/:orgId -> Get connection status and QR base64
+app.get('/api/status/:orgId', requireAuth, async (req, res) => {
+    const { orgId } = req.params
+    if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+
+    const session = sessions.get(orgId)
+    if (!session) {
+        return res.status(200).json({ connected: false, qr: null, error: 'No session initialized. Call /api/connect first.' })
+    }
+
+    if (session.isConnected) {
+        return res.status(200).json({ connected: true, qr: null })
+    }
+
+    if (session.qr) {
+        try {
+            const qrBase64 = await qrcode_web.toDataURL(session.qr)
+            return res.status(200).json({ connected: false, qr: qrBase64 })
+        } catch (e) {
+            return res.status(500).json({ connected: false, error: 'Error generating QR format' })
+        }
+    }
+
+    return res.status(200).json({ connected: false, qr: null })
+})
+
 // POST /send  → send a WhatsApp message
 app.post('/send', requireAuth, async (req, res) => {
     try {
-        const { phone, message } = req.body
+        const { phone, message, orgId } = req.body
 
-        if (!phone || !message) {
-            return res.status(400).json({ error: 'Missing phone or message' })
+        if (!phone || !message || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, message, or orgId' })
         }
 
-        if (!sock || !isConnected) {
-            return res.status(503).json({ error: 'WhatsApp is not connected. Scan the QR code first.' })
+        const session = sessions.get(orgId)
+
+        if (!session || !session.isConnected || !session.sock) {
+            return res.status(503).json({ error: 'WhatsApp is not connected.' })
         }
 
         // Normalize phone: strip +, spaces, dashes → e.g. "595981234567"
@@ -102,18 +175,18 @@ app.post('/send', requireAuth, async (req, res) => {
         const jid = `${cleanPhone}@s.whatsapp.net`
 
         // Verify the number exists on WhatsApp
-        const [result] = await sock.onWhatsApp(jid)
+        const [result] = await session.sock.onWhatsApp(jid)
         if (!result?.exists) {
             return res.status(404).json({ error: `Phone ${cleanPhone} is not registered on WhatsApp` })
         }
 
-        await sock.sendMessage(result.jid, { text: message })
+        await session.sock.sendMessage(result.jid, { text: message })
 
-        console.log(`[WA] Message sent to ${cleanPhone}`)
+        console.log(`[WA - ${orgId}] Message sent to ${cleanPhone}`)
         res.status(200).json({ success: true })
 
     } catch (error) {
-        console.error('[WA] Error sending message:', error.message)
+        console.error(`[WA - ${req.body?.orgId}] Error sending message:`, error.message)
         res.status(500).json({ error: error.message })
     }
 })
@@ -121,20 +194,21 @@ app.post('/send', requireAuth, async (req, res) => {
 // POST /send-document → send a PDF or other media
 app.post('/send-document', requireAuth, async (req, res) => {
     try {
-        const { phone, file, fileName, mimetype } = req.body
+        const { phone, file, fileName, mimetype, orgId } = req.body
 
-        if (!phone || !file || !fileName) {
-            return res.status(400).json({ error: 'Missing phone, file (base64) or fileName' })
+        if (!phone || !file || !fileName || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, file (base64), fileName, or orgId' })
         }
 
-        if (!sock || !isConnected) {
+        const session = sessions.get(orgId)
+        if (!session || !session.isConnected || !session.sock) {
             return res.status(503).json({ error: 'WhatsApp is not connected.' })
         }
 
         const cleanPhone = phone.replace(/[\+\-\s\(\)]/g, '')
         const jid = `${cleanPhone}@s.whatsapp.net`
 
-        const [result] = await sock.onWhatsApp(jid)
+        const [result] = await session.sock.onWhatsApp(jid)
         if (!result?.exists) {
             return res.status(404).json({ error: `Phone ${cleanPhone} is not registered` })
         }
@@ -142,142 +216,55 @@ app.post('/send-document', requireAuth, async (req, res) => {
         // Convert base64 to buffer
         const buffer = Buffer.from(file, 'base64')
 
-        await sock.sendMessage(result.jid, {
+        await session.sock.sendMessage(result.jid, {
             document: buffer,
             fileName: fileName,
             mimetype: mimetype || 'application/pdf'
         })
 
-        console.log(`[WA] Document ${fileName} sent to ${cleanPhone}`)
+        console.log(`[WA - ${orgId}] Document ${fileName} sent to ${cleanPhone}`)
         res.status(200).json({ success: true })
 
     } catch (error) {
-        console.error('[WA] Error sending document:', error.message)
+        console.error(`[WA - ${req.body?.orgId}] Error sending document:`, error.message)
         res.status(500).json({ error: error.message })
     }
 })
 
 // GET /health  → for Render health checks
 app.get('/health', (_req, res) => {
-    res.status(200).json({ status: 'ok', whatsapp_connected: isConnected })
+    res.status(200).json({ status: 'ok', sessions_active: Array.from(sessions.keys()) })
 })
 
 // POST /logout → disconnect and delete session
-app.post('/logout', async (_req, res) => {
+app.post('/logout', requireAuth, async (req, res) => {
     try {
-        if (sock) {
-            await sock.logout()
+        const { orgId } = req.body;
+        if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+
+        const session = sessions.get(orgId)
+
+        if (session && session.sock) {
+            await session.sock.logout() // This will trigger the connection=close event with DisconnectReason.loggedOut
+        } else {
+            // Force cleanup if sock wasn't fully initialized but folder exists
+            const authPath = getAuthPath(orgId)
+            if (fs.existsSync(authPath)) {
+                fs.rmSync(authPath, { recursive: true, force: true })
+            }
+            sessions.delete(orgId)
         }
 
-        const authPath = path.join(__dirname, 'auth_info_baileys')
-        if (fs.existsSync(authPath)) {
-            fs.rmSync(authPath, { recursive: true, force: true })
-        }
+        console.log(`[WA - ${orgId}] Logged out and session cleared via API.`)
 
-        isConnected = false
-        currentQrCode = null
-
-        console.log('[WA] Logged out and session cleared via web.')
-
-        // Restart connection after a short delay
-        setTimeout(() => {
-            connectToWhatsApp()
-        }, 3000)
-
-        res.status(200).json({ success: true, message: 'Logged out. Reconnecting...' })
+        res.status(200).json({ success: true, message: 'Logged out.' })
     } catch (error) {
-        console.error('[WA] Error during logout:', error.message)
+        console.error(`[WA - ${req.body?.orgId}] Error during logout:`, error.message)
         res.status(500).json({ error: error.message })
-    }
-})
-
-// GET /qr → renders an HTML page with the QR code
-app.get('/qr', async (_req, res) => {
-    if (isConnected) {
-        return res.send(`
-            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                <h2>WhatsApp Bot is already connected! ✅</h2>
-                <p>No QR code needed.</p>
-                <button onclick="handleLogout()" style="margin-top: 20px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer;">
-                    Disconnect & Logout
-                </button>
-                <script>
-                    function handleLogout() {
-                        if (confirm('Are you sure you want to logout and clear session?')) {
-                            fetch('/logout', { method: 'POST' })
-                                .then(r => r.json())
-                                .then(data => {
-                                    alert(data.message || 'Logging out...');
-                                    location.reload();
-                                })
-                                .catch(err => alert('Error logging out'));
-                        }
-                    }
-                </script>
-            </body></html>
-        `)
-    }
-
-    if (!currentQrCode) {
-        return res.send(`
-            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                <h2>QR Code not available yet.</h2>
-                <p>Please wait a moment and refresh this page.</p>
-                <hr style="margin-top: 20px; border: none; border-top: 1px solid #eee; width: 300px; margin-left: auto; margin-right: auto;">
-                <button onclick="handleLogout()" style="margin-top: 10px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
-                    Force Reset Session
-                </button>
-                <script>
-                    function handleLogout() {
-                        if (confirm('This will clear the current session. Proceed?')) {
-                            fetch('/logout', { method: 'POST' })
-                                .then(r => r.json())
-                                .then(data => {
-                                    alert(data.message || 'Resetting...');
-                                    location.reload();
-                                })
-                                .catch(err => alert('Error resetting'));
-                        }
-                    }
-                </script>
-            </body></html>
-        `)
-    }
-
-    try {
-        const qrImageBase64 = await qrcode_web.toDataURL(currentQrCode)
-        res.send(`
-            <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px; background: #f0f2f5;">
-                <div style="background: white; padding: 40px; border-radius: 10px; display: inline-block; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-                    <h2>Scan to connect WhatsApp Bot</h2>
-                    <img src="${qrImageBase64}" alt="WhatsApp QR Code" style="width: 300px; height: 300px;" />
-                    <p style="color: #666; font-size: 14px; margin-top: 20px;">Refresh the page if the QR expires.</p>
-                    <hr style="margin-top: 20px; border: none; border-top: 1px solid #eee;">
-                    <button onclick="handleLogout()" style="margin-top: 10px; padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
-                        Reset Session & Try Again
-                    </button>
-                    <script>
-                        function handleLogout() {
-                            if (confirm('This will clear the current session. Proceed?')) {
-                                fetch('/logout', { method: 'POST' })
-                                    .then(r => r.json())
-                                    .then(data => {
-                                        alert(data.message || 'Resetting...');
-                                        location.reload();
-                                    })
-                                    .catch(err => alert('Error resetting'));
-                            }
-                        }
-                    </script>
-                </div>
-            </body></html>
-        `)
-    } catch (err) {
-        res.status(500).send('Error generating QR code image')
     }
 })
 
 app.listen(PORT, () => {
     console.log(`[Server] WhatsApp API running on port ${PORT}`)
-    connectToWhatsApp()
+    loadExistingSessions()
 })
