@@ -24,7 +24,8 @@ const API_TOKEN = process.env.API_TOKEN || 'test-secret-local'
 const sessions = new Map()
 // session structure: { sock, isConnected, qr }
 
-const getAuthPath = (orgId) => path.join(__dirname, `auth_info_baileys_${orgId}`)
+const dataDir = process.env.DATA_DIR || __dirname;
+const getAuthPath = (orgId) => path.join(dataDir, `auth_info_baileys_${orgId}`)
 
 async function connectToWhatsApp(orgId) {
     if (!orgId) return;
@@ -88,12 +89,15 @@ async function connectToWhatsApp(orgId) {
 
 // Startup routine: automatically connect existing folders
 function loadExistingSessions() {
-    const files = fs.readdirSync(__dirname)
+    if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const files = fs.readdirSync(dataDir)
     const orgFolders = files.filter(f => f.startsWith('auth_info_baileys_'))
 
     orgFolders.forEach(folder => {
         const orgId = folder.replace('auth_info_baileys_', '')
-        console.log(`[WA] Auto-connecting saved session for Org ID: ${orgId}`)
+        console.log(`[WA] Auto-connecting saved session for Org ID: ${orgId} from ${dataDir}`)
         connectToWhatsApp(orgId)
     })
 }
