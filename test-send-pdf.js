@@ -1,5 +1,5 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs'
+import path from 'path'
 
 // Configuration
 const BOT_URL = 'http://localhost:3001'; // Point to local bot

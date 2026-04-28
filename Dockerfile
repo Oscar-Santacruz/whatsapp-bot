@@ -4,8 +4,9 @@ WORKDIR /app
 
 COPY package*.json ./
 
-# --omit=optional skips sharp and other optional native deps (not needed for text-only WhatsApp messages)
-RUN npm install --omit=optional
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && npm install --omit=optional \
+    && apk del .build-deps
 
 COPY . .
 

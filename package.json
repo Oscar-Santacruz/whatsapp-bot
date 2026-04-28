@@ -3,11 +3,13 @@
     "version": "1.0.0",
     "description": "WhatsApp Baileys Microservice for car-sale app",
     "main": "index.js",
+    "type": "module",
     "scripts": {
         "start": "node index.js"
     },
     "dependencies": {
-        "@whiskeysockets/baileys": "^6.7.9",
+        "@whiskeysockets/baileys": "^7.0.0-rc.9",
+        "better-sqlite3": "^12.9.0",
         "cors": "^2.8.5",
         "dotenv": "^16.4.5",
         "express": "^4.19.2",

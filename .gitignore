@@ -1,5 +1,5 @@
 node_modules/
 .env
-auth_info_baileys/
 .DS_Store
-/auth_info_baileys_5e776402-0759-46fe-b713-1d17ba87c9ef
+auth_info_baileys_*/
+data/
