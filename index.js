@@ -12,6 +12,7 @@ import {
 import {
     enqueueText,
     enqueueDocument,
+    enqueueCompound,
     setSocketProvider,
     resumeAllWorkers
 } from './lib/queue.js'
@@ -119,9 +120,21 @@ app.post('/send-document', requireAuth, async (req, res) => {
     }
 })
 
+/**
+ * POST /send-batch
+ *
+ * Body:
+ *   orgId       string   — organization id
+ *   callbackUrl string?  — called when all messages finish (receives results[])
+ *   messages    array    — each item:
+ *     phone     string   — recipient
+ *     message   string?  — text body
+ *     document  object?  — { base64, fileName, mimetype } → compound if message also present
+ *     metadata  object?  — opaque JSON returned as-is in the callback per message
+ */
 app.post('/send-batch', requireAuth, async (req, res) => {
     try {
-        const { orgId, messages } = req.body
+        const { orgId, messages, callbackUrl = null } = req.body
         if (!orgId || !Array.isArray(messages) || messages.length === 0) {
             return res.status(400).json({ error: 'Missing orgId or messages array' })
         }
@@ -131,25 +144,29 @@ app.post('/send-batch', requireAuth, async (req, res) => {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
 
-        const batchId = createBatch(orgId, messages.length)
+        const batchId = createBatch(orgId, messages.length, callbackUrl)
 
         for (const m of messages) {
-            if (m.file) {
+            const base = { orgId, phone: m.phone, batchId, metadata: m.metadata ?? null }
+
+            if (m.message && m.document) {
+                // compound: text + PDF as one atomic unit
+                enqueueCompound({
+                    ...base,
+                    message: m.message,
+                    file: m.document.base64,
+                    fileName: m.document.fileName,
+                    mimetype: m.document.mimetype,
+                })
+            } else if (m.document) {
                 enqueueDocument({
-                    orgId,
-                    phone: m.phone,
-                    file: m.file,
-                    fileName: m.fileName,
-                    mimetype: m.mimetype,
-                    batchId
+                    ...base,
+                    file: m.document.base64,
+                    fileName: m.document.fileName,
+                    mimetype: m.document.mimetype,
                 })
             } else {
-                enqueueText({
-                    orgId,
-                    phone: m.phone,
-                    message: m.message,
-                    batchId
-                })
+                enqueueText({ ...base, message: m.message })
             }
         }
 
