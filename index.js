@@ -17,6 +17,11 @@ import {
     resumeAllWorkers
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
+import {
+    upsertInboundWebhook,
+    getInboundWebhook,
+    deleteInboundWebhook
+} from './lib/db.js'
 
 const app = express()
 app.use(cors())
@@ -189,6 +194,62 @@ app.get('/health', (_req, res) => {
         connected: s.isConnected
     }))
     res.status(200).json({ status: 'ok', sessions })
+})
+
+// ── Inbound webhooks: gestión de configuración por orgId ──────────────────────
+//
+// POST   /api/inbound-webhooks            → crear o actualizar
+// GET    /api/inbound-webhooks/:orgId     → leer (sin exponer secret completo)
+// DELETE /api/inbound-webhooks/:orgId     → eliminar
+//
+// Una org sin fila acá tiene el comportamiento previo: los mensajes entrantes
+// solo se guardan en message_store y nadie los consume.
+
+app.post('/api/inbound-webhooks', requireAuth, (req, res) => {
+    try {
+        const { orgId, url, secret, enabled = true } = req.body
+        if (!orgId || !url || !secret) {
+            return res.status(400).json({ error: 'Missing orgId, url, or secret' })
+        }
+        if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+            return res.status(400).json({ error: 'Invalid url (must start with http:// or https://)' })
+        }
+        if (typeof secret !== 'string' || secret.length < 16) {
+            return res.status(400).json({ error: 'Invalid secret (min 16 chars)' })
+        }
+        upsertInboundWebhook({ orgId, url, secret, enabled: enabled ? 1 : 0 })
+        res.status(200).json({ ok: true })
+    } catch (e) {
+        console.error('[/api/inbound-webhooks POST] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
+app.get('/api/inbound-webhooks/:orgId', requireAuth, (req, res) => {
+    try {
+        const wh = getInboundWebhook(req.params.orgId)
+        if (!wh) return res.status(404).json({ error: 'Not found' })
+        res.status(200).json({
+            orgId: wh.org_id,
+            url: wh.url,
+            enabled: wh.enabled === 1,
+            // No devolvemos el secret completo: solo confirmamos formato/longitud.
+            secretMasked: wh.secret ? `***${wh.secret.slice(-4)}` : null,
+        })
+    } catch (e) {
+        console.error('[/api/inbound-webhooks GET] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
+app.delete('/api/inbound-webhooks/:orgId', requireAuth, (req, res) => {
+    try {
+        deleteInboundWebhook(req.params.orgId)
+        res.status(200).json({ ok: true })
+    } catch (e) {
+        console.error('[/api/inbound-webhooks DELETE] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
 })
 
 app.post('/logout', requireAuth, async (req, res) => {
