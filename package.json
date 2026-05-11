@@ -8,6 +8,7 @@
         "start": "node index.js"
     },
     "dependencies": {
+        "@supabase/supabase-js": "^2.105.4",
         "@whiskeysockets/baileys": "^7.0.0-rc.9",
         "better-sqlite3": "^12.9.0",
         "cors": "^2.8.5",
