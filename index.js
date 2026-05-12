@@ -13,6 +13,10 @@ import {
     enqueueText,
     enqueueDocument,
     enqueueCompound,
+    enqueueImage,
+    enqueueVideo,
+    enqueueAudio,
+    enqueueSticker,
     setSocketProvider,
     resumeAllWorkers
 } from './lib/queue.js'
@@ -125,6 +129,86 @@ app.post('/send-document', requireAuth, async (req, res) => {
     }
 })
 
+app.post('/send-image', requireAuth, async (req, res) => {
+    try {
+        const { phone, file, mimetype, caption, orgId } = req.body
+        if (!phone || !file || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, file, or orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueImage({ orgId, phone, file, mimetype, caption })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/send-image] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/send-video', requireAuth, async (req, res) => {
+    try {
+        const { phone, file, mimetype, caption, gifPlayback, orgId } = req.body
+        if (!phone || !file || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, file, or orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueVideo({ orgId, phone, file, mimetype, caption, gifPlayback: gifPlayback === true })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/send-video] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/send-audio', requireAuth, async (req, res) => {
+    try {
+        const { phone, file, mimetype, orgId } = req.body
+        if (!phone || !file || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, file, or orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueAudio({ orgId, phone, file, mimetype })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/send-audio] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/send-sticker', requireAuth, async (req, res) => {
+    try {
+        const { phone, file, mimetype, orgId } = req.body
+        if (!phone || !file || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, file, or orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueSticker({ orgId, phone, file, mimetype })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/send-sticker] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
 /**
  * POST /send-batch
  *
@@ -135,6 +219,10 @@ app.post('/send-document', requireAuth, async (req, res) => {
  *     phone     string   — recipient
  *     message   string?  — text body
  *     document  object?  — { base64, fileName, mimetype } → compound if message also present
+ *     image     object?  — { base64, mimetype }
+ *     video     object?  — { base64, mimetype, gifPlayback? }
+ *     audio     object?  — { base64, mimetype }
+ *     sticker   object?  — { base64, mimetype }
  *     metadata  object?  — opaque JSON returned as-is in the callback per message
  */
 app.post('/send-batch', requireAuth, async (req, res) => {
@@ -155,7 +243,7 @@ app.post('/send-batch', requireAuth, async (req, res) => {
             const base = { orgId, phone: m.phone, batchId, metadata: m.metadata ?? null }
 
             if (m.message && m.document) {
-                // compound: text + PDF as one atomic unit
+                // compound: text + document as one atomic unit
                 enqueueCompound({
                     ...base,
                     message: m.message,
@@ -170,7 +258,34 @@ app.post('/send-batch', requireAuth, async (req, res) => {
                     fileName: m.document.fileName,
                     mimetype: m.document.mimetype,
                 })
-            } else {
+            } else if (m.image) {
+                enqueueImage({
+                    ...base,
+                    file: m.image.base64,
+                    mimetype: m.image.mimetype,
+                    caption: m.message,
+                })
+            } else if (m.video) {
+                enqueueVideo({
+                    ...base,
+                    file: m.video.base64,
+                    mimetype: m.video.mimetype,
+                    caption: m.message,
+                    gifPlayback: m.video.gifPlayback === true,
+                })
+            } else if (m.audio) {
+                enqueueAudio({
+                    ...base,
+                    file: m.audio.base64,
+                    mimetype: m.audio.mimetype,
+                })
+            } else if (m.sticker) {
+                enqueueSticker({
+                    ...base,
+                    file: m.sticker.base64,
+                    mimetype: m.sticker.mimetype,
+                })
+            } else if (m.message) {
                 enqueueText({ ...base, message: m.message })
             }
         }
