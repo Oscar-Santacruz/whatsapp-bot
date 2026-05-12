@@ -91,7 +91,7 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
 
 app.post('/send', requireAuth, async (req, res) => {
     try {
-        const { phone, message, orgId } = req.body
+        const { phone, message, orgId, quotedMessageId } = req.body
         if (!phone || !message || !orgId) {
             return res.status(400).json({ error: 'Missing phone, message, or orgId' })
         }
@@ -101,7 +101,7 @@ app.post('/send', requireAuth, async (req, res) => {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
 
-        const jobId = enqueueText({ orgId, phone, message })
+        const jobId = enqueueText({ orgId, phone, message, quotedMessageId })
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send] Error:`, error.message)
@@ -286,7 +286,7 @@ app.post('/send-batch', requireAuth, async (req, res) => {
                     mimetype: m.sticker.mimetype,
                 })
             } else if (m.message) {
-                enqueueText({ ...base, message: m.message })
+                enqueueText({ ...base, message: m.message, quotedMessageId: m.quotedMessageId ?? null })
             }
         }
 
