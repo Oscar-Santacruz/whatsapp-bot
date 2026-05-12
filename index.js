@@ -7,7 +7,9 @@ import {
     getSession,
     getAllSessions,
     loadExistingSessions,
-    logoutSession
+    logoutSession,
+    getCurrentlyConnectingOrgId,
+    purgeCorruptSession
 } from './lib/whatsapp.js'
 import {
     enqueueText,
@@ -26,6 +28,33 @@ import {
     getInboundWebhook,
     deleteInboundWebhook
 } from './lib/db.js'
+
+// Baileys lanza errores síncronos de descifrado Noise dentro de listeners del
+// WebSocket cuando las credenciales guardadas ya no son válidas. Esos errores
+// no llegan al connection.update, así que los atajamos a nivel proceso para
+// borrar la sesión corrupta y seguir vivos.
+process.on('uncaughtException', (err) => {
+    const msg = err?.message ?? ''
+    const isNoiseDecryptFail =
+        msg.includes('Unsupported state') ||
+        msg.includes('unable to authenticate data')
+
+    if (isNoiseDecryptFail) {
+        const orgId = getCurrentlyConnectingOrgId()
+        console.error(
+            `[WA] Sesión corrupta detectada (Noise decrypt fail)` +
+            (orgId ? ` para Org: ${orgId}` : ' (orgId desconocido)')
+        )
+        if (orgId) purgeCorruptSession(orgId)
+        return
+    }
+    console.error('[fatal] uncaughtException:', err)
+    process.exit(1)
+})
+
+process.on('unhandledRejection', (err) => {
+    console.error('[unhandledRejection]', err)
+})
 
 const app = express()
 app.use(cors())
