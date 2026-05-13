@@ -28,6 +28,7 @@ import {
     getInboundWebhook,
     deleteInboundWebhook
 } from './lib/db.js'
+import { getProfilePictureCached } from './lib/profile-picture-cache.js'
 
 // Baileys lanza errores síncronos de descifrado Noise dentro de listeners del
 // WebSocket cuando las credenciales guardadas ya no son válidas. Esos errores
@@ -330,6 +331,44 @@ app.get('/api/batch/:batchId', requireAuth, (req, res) => {
     const batch = getBatch(req.params.batchId)
     if (!batch) return res.status(404).json({ error: 'Batch not found' })
     res.json(batch)
+})
+
+// GET /profile-picture?orgId=<...>&jid=<urlencoded_jid>[&force=1]
+//
+// Devuelve `{ url, setAt }`. La app la llama para refrescar la foto on-demand
+// cuando el usuario aprieta "Actualizar foto" (con `force=1`) o cuando todavía
+// no tiene la URL en cache local. Sirve siempre desde el caché del bot salvo
+// que `force=1` o que el TTL haya expirado.
+app.get('/profile-picture', requireAuth, async (req, res) => {
+    try {
+        const { orgId, jid } = req.query
+        const force = req.query.force === '1' || req.query.force === 'true'
+
+        if (!orgId || typeof orgId !== 'string') {
+            return res.status(400).json({ error: 'Missing orgId' })
+        }
+        if (!jid || typeof jid !== 'string') {
+            return res.status(400).json({ error: 'Missing jid' })
+        }
+        if (!/@(g\.us|s\.whatsapp\.net|lid)$/.test(jid)) {
+            return res.status(400).json({ error: 'Invalid jid format' })
+        }
+
+        const session = getSession(orgId)
+        if (!session || !session.sock || !session.isConnected) {
+            return res.status(502).json({ error: 'Baileys not connected for this orgId' })
+        }
+
+        const pic = await getProfilePictureCached(orgId, session.sock, jid, { force })
+        return res.status(200).json({ url: pic.url, setAt: pic.setAt })
+    } catch (err) {
+        const statusCode = err?.output?.statusCode ?? err?.status ?? null
+        if (statusCode === 429) {
+            return res.status(429).json({ error: 'WhatsApp rate limit' })
+        }
+        console.error(`[/profile-picture] Error:`, err?.message ?? err)
+        return res.status(500).json({ error: err?.message ?? 'Internal error' })
+    }
 })
 
 app.get('/health', (_req, res) => {
