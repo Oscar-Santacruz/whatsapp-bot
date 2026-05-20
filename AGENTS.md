@@ -61,3 +61,34 @@ Defaults documentados al lado de cada variable:
 
 ## Reviews
 - Para cambios sensibles (envío de mensajes, contrato de webhook, persistencia) correr `/judgment-day` (dual review adversarial) antes de mergear.
+
+## Workflow estándar de cambio (procedimiento canónico)
+
+Este es el flujo COMPLETO que se aplica a cualquier cambio funcional. Para cambios solo a `AGENTS.md` u otros docs, los pasos 7 (deploy) y 8 (memoria sobre código) son opcionales — un commit + push alcanza.
+
+0. **Sincronizar antes de empezar** — `git fetch origin && git log HEAD..origin/main`. Si hay commits upstream → `git pull --rebase` ANTES de implementar. Implementar sobre base stale invalida la review posterior.
+1. **Implementar el cambio** — ediciones mínimas y atómicas.
+2. **Judgment Day** — `/judgment-day` sobre los archivos modificados. Dos jueces ciegos en paralelo, criterios técnicos.
+3. **Fix loop**:
+   - Issues CRITICAL o WARNING (real) **confirmados por ambos jueces** → aplicar fix automático y re-juzgar.
+   - Issues confirmados por **un solo juez** → revisar manualmente con el usuario, no auto-fixear.
+   - Si un juez aprueba y el otro pide cambios por una preocupación **no-defecto** (coordinación, riesgo de despliegue, intent ambiguo) → resolver con aclaración del usuario, no es un loop infinito.
+   - Tras 2 iteraciones con issues remanentes, escalar.
+4. **Re-sincronizar pre-push** — `git fetch origin` por si algo entró durante la implementación. Si hubo divergencia → `git pull --rebase` y volver a juzgar (el rebase puede invalidar fixes previos).
+5. **Commit** — conventional, sin `Co-Authored-By`, en el idioma de la conversación.
+6. **Push** — `git push origin main`.
+7. **Deploy manual con Render CLI** (auto-deploy on-commit está OFF) — usar el comando documentado en la sección _Deploy workflow_ arriba. Luego verificar con `render deploys list <service-id> --limit 1` hasta status `live`. Rollback si falla: `render deploys create <service-id> --commit <sha-anterior> --confirm`.
+8. **Persistir en memoria** — `mem_save` con `topic_key` namespaceado como `whatsapp-bot/<area>/<tópico>` (ej: `whatsapp-bot/queue/anti-ban`, `whatsapp-bot/webhook/media-contract`). Saves para decisiones, gotchas, contratos.
+9. **Actualizar `AGENTS.md`** — si el cambio toca contratos, env vars, convenciones, infra o el workflow mismo. Si solo se actualiza `AGENTS.md`, el workflow se simplifica: pasos 0, 1, 5, 6 — sin deploy ni Judgment Day pesado.
+10. **Session summary** — `mem_session_summary` con Goal / Discoveries / Accomplished / Next Steps / Relevant Files antes de cerrar.
+
+### Atajos que disparan este flujo
+
+Match por intención, no por string literal. Ejemplos en español + inglés:
+
+| Intención | Frases típicas | Pasos |
+|---|---|---|
+| Revisar + fix loop | "verifica lo que hicieron mal", "haz un bucle hasta que de aprove", "review and fix loop" | 2-3 |
+| Cerrar y desplegar | "commit, build, push, deploy", "usa cli de render", "ship it" | 4-7 |
+| Persistir | "guarda esto en memoria", "save to memory and AGENTS.md" | 8-9 |
+| Archivar | "archiva", "wrap up", "session summary" | 10 |
