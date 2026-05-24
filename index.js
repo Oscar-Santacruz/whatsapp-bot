@@ -29,6 +29,7 @@ import {
     deleteInboundWebhook
 } from './lib/db.js'
 import { getProfilePictureCached } from './lib/profile-picture-cache.js'
+import { getGroupMeta, setGroupMeta } from './lib/group-cache.js'
 
 // Baileys lanza errores síncronos de descifrado Noise dentro de listeners del
 // WebSocket cuando las credenciales guardadas ya no son válidas. Esos errores
@@ -367,6 +368,41 @@ app.get('/profile-picture', requireAuth, async (req, res) => {
             return res.status(429).json({ error: 'WhatsApp rate limit' })
         }
         console.error(`[/profile-picture] Error:`, err?.message ?? err)
+        return res.status(500).json({ error: err?.message ?? 'Internal error' })
+    }
+})
+
+// GET /group-participants?orgId=<uuid>&jid=<jid>
+//
+// Devuelve la lista de JIDs de los participantes del grupo.
+// Usa el caché de groupMetadata (TTL 5 min); solo llama a Baileys si expiró.
+app.get('/group-participants', requireAuth, async (req, res) => {
+    try {
+        const { orgId, jid } = req.query
+        if (!orgId || !jid) {
+            return res.status(400).json({ error: 'Missing orgId or jid' })
+        }
+        if (!jid.endsWith('@g.us')) {
+            return res.status(400).json({ error: 'jid must end with @g.us' })
+        }
+
+        const session = getSession(orgId)
+        if (!session || !session.sock || !session.isConnected) {
+            return res.status(503).json({ error: 'Baileys not connected for this orgId' })
+        }
+
+        let cached = getGroupMeta(orgId, jid)
+        if (!cached) {
+            const meta = await session.sock.groupMetadata(jid)
+            const subject = meta?.subject ?? null
+            const participants = meta?.participants?.map((p) => p.id) ?? null
+            setGroupMeta(orgId, jid, { subject, participants })
+            cached = { subject, participants }
+        }
+
+        return res.status(200).json({ jid, participants: cached.participants ?? [] })
+    } catch (err) {
+        console.error(`[/group-participants] Error:`, err?.message ?? err)
         return res.status(500).json({ error: err?.message ?? 'Internal error' })
     }
 })
