@@ -19,6 +19,7 @@ import {
     enqueueVideo,
     enqueueAudio,
     enqueueSticker,
+    enqueueStatus,
     setSocketProvider,
     resumeAllWorkers
 } from './lib/queue.js'
@@ -105,7 +106,7 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     }
 
     if (session.isConnected) {
-        return res.status(200).json({ connected: true, qr: null })
+        return res.status(200).json({ connected: true, qr: null, phone: session.sock?.user?.id ?? null })
     }
 
     if (session.qr) {
@@ -118,6 +119,34 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     }
 
     return res.status(200).json({ connected: false, qr: null })
+})
+
+// TEST ONLY — envío sync sin queue ni delay anti-ban
+app.post('/send-sync', requireAuth, async (req, res) => {
+    try {
+        const { phone, message, orgId } = req.body
+        if (!phone || !message || !orgId) {
+            return res.status(400).json({ error: 'Missing phone, message, or orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session?.isConnected || !session?.sock) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const rawJid = phone.includes('@') ? phone : `${phone.replace(/[\+\-\s\(\)]/g, '')}@s.whatsapp.net`
+        const onWa = await session.sock.onWhatsApp(rawJid)
+        const resolved = Array.isArray(onWa) ? onWa[0] : null
+        if (!resolved?.exists) {
+            return res.status(422).json({ error: 'Phone not registered on WhatsApp', jid: rawJid })
+        }
+        const jid = resolved.jid || rawJid
+        const result = await session.sock.sendMessage(jid, { text: message })
+        res.status(200).json({ status: 'sent', messageId: result?.key?.id ?? null, jid, result })
+    } catch (error) {
+        console.error(`[/send-sync] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
 })
 
 app.post('/send', requireAuth, async (req, res) => {
@@ -236,6 +265,45 @@ app.post('/send-sticker', requireAuth, async (req, res) => {
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send-sticker] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * POST /publish-status
+ *
+ * Publica un estado de WhatsApp (status@broadcast).
+ * Body:
+ *   orgId           string   — organization id
+ *   recipients      string[] — teléfonos/JIDs que verán el estado (requerido, no vacío)
+ *   message         string?  — texto del estado, o caption si hay file
+ *   file            string?  — media en base64 (imagen o video)
+ *   mimetype        string?  — image/* o video/* (default image/jpeg si hay file)
+ *   backgroundColor string?  — color de fondo, solo estado de texto
+ *   font            number?  — fuente, solo estado de texto
+ */
+app.post('/publish-status', requireAuth, async (req, res) => {
+    try {
+        const { orgId, recipients, message, file, mimetype, backgroundColor, font } = req.body
+        if (!orgId || !Array.isArray(recipients) || recipients.length === 0) {
+            return res.status(400).json({ error: 'Missing orgId or recipients (non-empty array)' })
+        }
+        if (!recipients.every(r => typeof r === 'string' && r.trim())) {
+            return res.status(400).json({ error: 'recipients must be non-empty strings' })
+        }
+        if (!file && !message) {
+            return res.status(400).json({ error: 'Provide message (text) or file (media)' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueStatus({ orgId, recipients, message, file, mimetype, backgroundColor, font })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/publish-status] Error:`, error.message)
         res.status(500).json({ error: error.message })
     }
 })
