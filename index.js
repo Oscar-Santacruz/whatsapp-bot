@@ -20,6 +20,7 @@ import {
     enqueueAudio,
     enqueueSticker,
     enqueueStatus,
+    checkStatusRateLimit,
     setSocketProvider,
     resumeAllWorkers
 } from './lib/queue.js'
@@ -29,6 +30,7 @@ import {
     getInboundWebhook,
     deleteInboundWebhook
 } from './lib/db.js'
+import { countContacts, getContactJids } from './lib/contacts.js'
 import { getProfilePictureCached } from './lib/profile-picture-cache.js'
 import { getGroupMeta, setGroupMeta } from './lib/group-cache.js'
 
@@ -284,15 +286,29 @@ app.post('/send-sticker', requireAuth, async (req, res) => {
  */
 app.post('/publish-status', requireAuth, async (req, res) => {
     try {
-        const { orgId, recipients, message, file, mimetype, backgroundColor, font } = req.body
-        if (!orgId || !Array.isArray(recipients) || recipients.length === 0) {
-            return res.status(400).json({ error: 'Missing orgId or recipients (non-empty array)' })
-        }
-        if (!recipients.every(r => typeof r === 'string' && r.trim())) {
-            return res.status(400).json({ error: 'recipients must be non-empty strings' })
+        const { orgId, recipients, toAllContacts, message, file, mimetype, backgroundColor, font } = req.body
+        if (!orgId) {
+            return res.status(400).json({ error: 'Missing orgId' })
         }
         if (!file && !message) {
             return res.status(400).json({ error: 'Provide message (text) or file (media)' })
+        }
+
+        // Audiencia: toda la libreta sincronizada de la sesión, o una lista explícita.
+        let audience
+        if (toAllContacts) {
+            audience = getContactJids(orgId)
+            if (audience.length === 0) {
+                return res.status(400).json({ error: 'No contacts synced yet for this session' })
+            }
+        } else {
+            if (!Array.isArray(recipients) || recipients.length === 0) {
+                return res.status(400).json({ error: 'Provide recipients (non-empty array) or set toAllContacts: true' })
+            }
+            if (!recipients.every(r => typeof r === 'string' && r.trim())) {
+                return res.status(400).json({ error: 'recipients must be non-empty strings' })
+            }
+            audience = recipients
         }
 
         const session = getSession(orgId)
@@ -300,10 +316,31 @@ app.post('/publish-status', requireAuth, async (req, res) => {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
 
-        const jobId = enqueueStatus({ orgId, recipients, message, file, mimetype, backgroundColor, font })
-        res.status(202).json({ status: 'queued', jobId })
+        // Anti-ban: limita cuántos estados se publican por ventana de tiempo.
+        const rl = checkStatusRateLimit(orgId)
+        if (!rl.ok) {
+            return res.status(429).json({ error: `Status rate limit reached (${rl.count}/${rl.limit} per ${rl.scope})` })
+        }
+
+        const jobId = enqueueStatus({ orgId, recipients: audience, message, file, mimetype, backgroundColor, font })
+        res.status(202).json({ status: 'queued', jobId, audience: audience.length })
     } catch (error) {
         console.error(`[/publish-status] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * GET /api/contacts/:orgId
+ * Cantidad de contactos sincronizados para esa sesión. Lo usa el cliente para
+ * mostrar "publicar a N contactos" antes de disparar el estado a toda la libreta.
+ */
+app.get('/api/contacts/:orgId', requireAuth, (req, res) => {
+    try {
+        const { orgId } = req.params
+        res.json({ orgId, count: countContacts(orgId) })
+    } catch (error) {
+        console.error(`[/api/contacts] Error:`, error.message)
         res.status(500).json({ error: error.message })
     }
 })
