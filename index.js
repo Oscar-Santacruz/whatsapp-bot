@@ -78,6 +78,10 @@ const requireAuth = (req, res, next) => {
     next()
 }
 
+// Margen para dejar que un handshake recién arrancado emita su QR (Baileys
+// tarda ~2-5s) antes de considerar la sesión colgada y reciclarla.
+const CONNECT_GRACE_MS = 25_000
+
 app.post('/api/connect', requireAuth, async (req, res) => {
     try {
         const { orgId } = req.body
@@ -88,7 +92,17 @@ app.post('/api/connect', requireAuth, async (req, res) => {
             if (existing.isConnected) {
                 return res.status(200).json({ status: 'connected', message: 'Already connected' })
             }
-            return res.status(200).json({ status: 'connecting', message: 'Already connecting, QR may be available.' })
+            if (existing.qr) {
+                return res.status(200).json({ status: 'connecting', message: 'QR available.' })
+            }
+            const age = Date.now() - (existing.connectingSince || 0)
+            if (existing.connecting || (existing.sock && age < CONNECT_GRACE_MS)) {
+                return res.status(200).json({ status: 'connecting', message: 'Connection in progress.' })
+            }
+            // Sesión colgada: socket muerto/viejo sin QR ni conexión. Antes se
+            // respondía "Already connecting" sin reconectar nunca — el panel
+            // quedaba esperando un QR que no iba a llegar. Ahora se recicla.
+            console.log(`[WA - ${orgId}] /api/connect: sesión colgada, reiniciando conexión.`)
         }
 
         await connectToWhatsApp(orgId)
@@ -118,6 +132,13 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
         } catch {
             return res.status(500).json({ connected: false, error: 'Error generating QR' })
         }
+    }
+
+    // Conexión en proceso (handshake, QR por emitirse o reconexión con
+    // backoff): avisar al panel para que muestre "conectando" en vez de
+    // marcar el canal como desconectado mientras espera el QR.
+    if (session.connecting || session.sock || session.reconnectTimer) {
+        return res.status(200).json({ connected: false, qr: null, status: 'connecting' })
     }
 
     return res.status(200).json({ connected: false, qr: null })
