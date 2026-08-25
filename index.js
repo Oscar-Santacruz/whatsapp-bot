@@ -512,6 +512,59 @@ app.get('/group-participants', requireAuth, async (req, res) => {
     }
 })
 
+// GET /groups?orgId=<uuid>
+//
+// Devuelve TODOS los grupos en los que está la sesión, con su nombre.
+//
+// Es lo que necesita un panel para que el usuario ELIJA un grupo de una lista.
+// El JID ('120363…@g.us') no se puede tipear ni copiar: WhatsApp no lo muestra
+// en ninguna pantalla de la app. Sin esto, la única forma de descubrir un grupo
+// era esperar a que alguien escribiera en él y verlo llegar por el webhook de
+// entrada — que además hay que tener configurado por orgId, así que para una
+// org sin webhook la lista quedaba vacía para siempre.
+//
+// Distinto de /group-participants, que responde por UN grupo que ya conocés.
+app.get('/groups', requireAuth, async (req, res) => {
+    try {
+        const { orgId } = req.query
+        if (!orgId) {
+            return res.status(400).json({ error: 'Missing orgId' })
+        }
+
+        const session = getSession(orgId)
+        if (!session || !session.sock || !session.isConnected) {
+            return res.status(503).json({ error: 'Baileys not connected for this orgId' })
+        }
+
+        const metas = await session.sock.groupFetchAllParticipating()
+
+        const groups = Object.values(metas ?? {})
+            .filter((meta) => meta?.id)
+            .map((meta) => {
+                // De paso alimenta el caché de /group-participants: esta llamada
+                // ya trajo la metadata completa, y volver a pedírsela a WhatsApp
+                // grupo por grupo sería pagar dos veces lo mismo.
+                setGroupMeta(orgId, meta.id, {
+                    subject: meta.subject ?? null,
+                    participants: meta.participants?.map((p) => p.id) ?? null
+                })
+                return {
+                    jid: meta.id,
+                    subject: meta.subject ?? null,
+                    participants: meta.participants?.length ?? 0
+                }
+            })
+            // Por nombre: el panel la muestra tal cual, y sin orden hay que
+            // leerla entera para encontrar uno.
+            .sort((a, b) => (a.subject ?? '').localeCompare(b.subject ?? '', 'es'))
+
+        return res.status(200).json({ groups })
+    } catch (err) {
+        console.error(`[/groups] Error:`, err?.message ?? err)
+        return res.status(500).json({ error: err?.message ?? 'Internal error' })
+    }
+})
+
 app.get('/health', (_req, res) => {
     const sessions = Array.from(getAllSessions().entries()).map(([orgId, s]) => ({
         orgId,
