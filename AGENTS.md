@@ -9,18 +9,23 @@ Instrucciones para agentes (Claude Code, Codex, etc) trabajando en este repo.
 - Supabase (storage de media + service-role)
 - Dotenv para configuración
 
-## Deploy workflow (manual, NO on-commit)
+## Deploy workflow (auto-deploy on-commit ACTIVADO)
 
-El auto-deploy on-commit de Render está **desactivado**. El flujo es:
+El servicio de Render tiene **auto-deploy activado**: mergear/pushear a `main` ya
+dispara el deploy solo. Para saltarlo en un commit (docs, etc), incluir
+`[skip render]` en el mensaje.
 
 1. `git commit` con conventional commits en español o inglés (sin `Co-Authored-By`).
-2. `git push origin main`.
-3. **Deploy manual con Render CLI**:
+2. `git push origin main` → Render deploya automáticamente.
+3. Redeploy forzado o rollback, si hace falta:
    ```bash
-   render deploys create srv-d6fjhbv5r7bs73dh4iag --confirm
+   render deploys create srv-d91iqr8js32c739g3ipg --confirm
    ```
-   - Service: `whatsapp-bot-car-sale`
-   - Service ID: `srv-d6fjhbv5r7bs73dh4iag`
+   - Service: `whatsapp-bot-iptest` (es el PRODUCTIVO pese al sufijo "iptest":
+     tiene el disco de sesiones Baileys en `/app/auth_info_baileys` y flota lo
+     consume vía `WHATSAPP_BOT_URL=https://whatsapp-bot-iptest.onrender.com`)
+   - Service ID: `srv-d91iqr8js32c739g3ipg`
+   - URL: https://whatsapp-bot-iptest.onrender.com
    - Render CLI binary: `/c/Users/Oscar/go/bin/render` (Windows/Git Bash)
 
 No hay paso de build (`npm start` directo desde `index.js`).
@@ -77,7 +82,7 @@ Este es el flujo COMPLETO que se aplica a cualquier cambio funcional. Para cambi
 4. **Re-sincronizar pre-push** — `git fetch origin` por si algo entró durante la implementación. Si hubo divergencia → `git pull --rebase` y volver a juzgar (el rebase puede invalidar fixes previos).
 5. **Commit** — conventional, sin `Co-Authored-By`, en el idioma de la conversación.
 6. **Push** — `git push origin main`.
-7. **Deploy manual con Render CLI** (auto-deploy on-commit está OFF) — usar el comando documentado en la sección _Deploy workflow_ arriba. Luego verificar con `render deploys list <service-id> --limit 1` hasta status `live`. Rollback si falla: `render deploys create <service-id> --commit <sha-anterior> --confirm`.
+7. **Verificar el deploy** (auto-deploy on-commit está ON — el push del paso 6 ya lo disparó) — chequear con `render deploys list <service-id> -o json` (cortar en el cliente; `--limit` no existe en este comando) hasta status `live`. Rollback si falla: `render deploys create <service-id> --commit <sha-anterior> --confirm`.
 8. **Persistir en memoria** — `mem_save` con `topic_key` namespaceado como `whatsapp-bot/<area>/<tópico>` (ej: `whatsapp-bot/queue/anti-ban`, `whatsapp-bot/webhook/media-contract`). Saves para decisiones, gotchas, contratos.
 9. **Actualizar `AGENTS.md`** — si el cambio toca contratos, env vars, convenciones, infra o el workflow mismo. Si solo se actualiza `AGENTS.md`, el workflow se simplifica: pasos 0, 1, 5, 6 — sin deploy ni Judgment Day pesado.
 10. **Session summary** — `mem_session_summary` con Goal / Discoveries / Accomplished / Next Steps / Relevant Files antes de cerrar.
