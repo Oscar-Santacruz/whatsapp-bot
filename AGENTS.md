@@ -39,6 +39,9 @@ No hay paso de build (`npm start` directo desde `index.js`).
 - El panel del SAAS (alquilacar.app) espera `media` como **objeto único** con la forma `{ tipo, storagePath, mimeType, sizeBytes, durationMs }` (ver commit `c3dea05`).
 - En Baileys un mensaje tiene a lo sumo un tipo de media (image/video/audio/document/sticker), así que el objeto único es coherente.
 - **No revertir** ese contrato a array sin coordinar con el consumidor — el validador del backend descarta arrays y deja `media_*` en NULL aunque el binario ya esté en Storage.
+- **Este bot le da conversaciones a DOS productos**: flota (AlquilaCar) y KuSystem. El destino se resuelve por org con `ORG_INBOUND_ROUTES`; lo que no está mapeado va a `ORG_INBOUND_WEBHOOK_URL`. Antes era una sola URL global y las sesiones de KuSystem caían igual en flota, que responde 200 e ignora los orgId que no conoce: sus mensajes se perdieron durante meses sin un solo error en los logs.
+- El modo de falla de este archivo es **silencioso**: una entrega mal ruteada devuelve 200 igual. Por eso el ruteo tiene test (`npm test`) y por eso un `ORG_INBOUND_ROUTES` roto se ignora entero y cae al default en vez de tirar. Correr `npm test` antes de pushear cambios acá.
+- No loguear `ORG_INBOUND_ROUTES` ni `err.message` de su `JSON.parse`: el valor tiene secrets adentro y Node cita un pedazo del input cuando la basura está al principio.
 
 ## Configuración por env (`.env`)
 Defaults documentados al lado de cada variable:
@@ -49,8 +52,9 @@ Defaults documentados al lado de cada variable:
 | `API_TOKEN` | `test-secret-local` | Token de auth para endpoints internos |
 | `SEND_DELAY_MIN_MS` | `5000` | Mínimo (ms) del delay random entre mensajes consecutivos por org. **Bajarlo aumenta riesgo de ban.** |
 | `SEND_DELAY_MAX_MS` | `10000` | Máximo (ms). Si MIN > MAX, vuelve a defaults con warn. |
-| `ORG_INBOUND_WEBHOOK_URL` | — | Endpoint del panel para webhooks omnichannel |
-| `ORG_INBOUND_WEBHOOK_SECRET` | — | HMAC secret compartido con el SAAS |
+| `ORG_INBOUND_ROUTES` | — | JSON `{ "<orgId>": { "url", "secret" } }`. Ruteo del webhook omnichannel por sesión, para que cada producto reciba lo suyo. Roto o ausente → todo cae al default. |
+| `ORG_INBOUND_WEBHOOK_URL` | — | Endpoint del panel para las orgs **sin** ruta propia (hoy: flota) |
+| `ORG_INBOUND_WEBHOOK_SECRET` | — | HMAC secret de ese destino por defecto |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | Para upload de media |
 
 ## Anti-ban (lib/queue.js)

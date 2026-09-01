@@ -115,6 +115,26 @@ test('un ORG_INBOUND_ROUTES roto no deja mudo al destino por defecto', async () 
     porDefecto.cerrar()
 })
 
+test('un espacio de más al pegar la clave no manda la sesión al destino equivocado', async () => {
+    const propio = await saasFalso()
+    const porDefecto = await saasFalso()
+    const ORG = 'cb99ca2e-0c7e-4349-9f46-bb042b345c78'
+
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: porDefecto.url,
+        ORG_INBOUND_WEBHOOK_SECRET: 'secreto-por-defecto',
+        ORG_INBOUND_ROUTES: JSON.stringify({ [` ${ORG} `]: { url: propio.url, secret: 'propio' } }),
+    })
+
+    await mod.maybeEmitOrgInboundWebhook(ORG, mensajeDeTexto('M-TRIM', 'hola'))
+
+    assert.equal(propio.entregas.length, 1, 'la clave se trimea antes de indexar')
+    assert.equal(porDefecto.entregas.length, 0)
+
+    propio.cerrar()
+    porDefecto.cerrar()
+})
+
 test('una entrada sin secret se descarta sola, sin arrastrar al resto del mapa', async () => {
     const bueno = await saasFalso()
     const porDefecto = await saasFalso()
