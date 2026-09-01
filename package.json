@@ -5,7 +5,8 @@
     "main": "index.js",
     "type": "module",
     "scripts": {
-        "start": "node index.js"
+        "start": "node index.js",
+        "test": "node --test \"test/*.test.mjs\""
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.105.4",
