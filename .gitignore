@@ -4,3 +4,4 @@ node_modules/
 auth_info_baileys_*/
 data/
 .codegraph/
+auth_data/
