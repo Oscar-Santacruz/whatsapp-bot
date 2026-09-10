@@ -9,7 +9,9 @@ import {
     loadExistingSessions,
     logoutSession,
     getCurrentlyConnectingOrgId,
-    purgeCorruptSession
+    purgeCorruptSession,
+    requestPairingSession,
+    hasLinkedNumber
 } from './lib/whatsapp.js'
 import {
     enqueueText,
@@ -98,29 +100,93 @@ app.post('/api/connect', requireAuth, async (req, res) => {
     }
 })
 
+/**
+ * Vinculación por código en vez de QR.
+ *
+ * Body: { orgId, phone } — `phone` con código de país, sin '+' ni separadores.
+ * Devuelve el código de 8 caracteres que el operador tipea en WhatsApp →
+ * Dispositivos vinculados → Vincular con número de teléfono.
+ *
+ * Rechaza la operación si la org ya tiene credenciales (conectada o
+ * reconectando): pedir un código borra la sesión guardada, así que primero
+ * hay que hacer /logout de forma explícita.
+ */
+app.post('/api/pair', requireAuth, async (req, res) => {
+    try {
+        const { orgId, phone } = req.body
+        if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+
+        const digits = String(phone ?? '').replace(/\D/g, '')
+        if (digits.length < 8 || digits.length > 15) {
+            return res.status(400).json({
+                error: 'Invalid phone. Usá solo dígitos, con código de país y sin "+".'
+            })
+        }
+
+        const existing = getSession(orgId)
+        if (existing?.isConnected) {
+            return res.status(409).json({
+                code: 'ALREADY_LINKED',
+                error: 'Ya hay una sesión conectada. Desconectá antes de vincular otro número.'
+            })
+        }
+        if (hasLinkedNumber(orgId)) {
+            return res.status(409).json({
+                code: 'ALREADY_LINKED',
+                error: 'La org ya tiene un número vinculado. Desconectá la sesión antes de vincular por código.'
+            })
+        }
+
+        const { code } = await requestPairingSession(orgId, digits)
+        console.log(`[WA - ${orgId}] Pairing code entregado vía API.`)
+        res.status(200).json({ code, phone: digits })
+    } catch (e) {
+        console.error('[/api/pair] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
 app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     const { orgId } = req.params
     if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
 
     const session = getSession(orgId)
     if (!session) {
-        return res.status(200).json({ connected: false, qr: null, error: 'No session initialized.' })
+        return res.status(200).json({ connected: false, qr: null, pairingCode: null, error: 'No session initialized.' })
     }
 
     if (session.isConnected) {
-        return res.status(200).json({ connected: true, qr: null, phone: session.sock?.user?.id ?? null })
+        return res.status(200).json({ connected: true, qr: null, pairingCode: null, phone: session.sock?.user?.id ?? null })
+    }
+
+    if (session.pairingCode) {
+        return res.status(200).json({
+            connected: false,
+            qr: null,
+            pairingCode: session.pairingCode,
+            phone: session.pairingPhone ?? null
+        })
+    }
+
+    if (session.pairingError) {
+        return res.status(200).json({
+            connected: false,
+            qr: null,
+            pairingCode: null,
+            error: session.pairingError
+        })
     }
 
     if (session.qr) {
         try {
             const qrBase64 = await qrcode_web.toDataURL(session.qr)
-            return res.status(200).json({ connected: false, qr: qrBase64 })
+            return res.status(200).json({ connected: false, qr: qrBase64, pairingCode: null })
         } catch {
             return res.status(500).json({ connected: false, error: 'Error generating QR' })
         }
     }
 
-    return res.status(200).json({ connected: false, qr: null })
+    return res.status(200).json({ connected: false, qr: null, pairingCode: null })
 })
 
 // TEST ONLY — envío sync sin queue ni delay anti-ban
