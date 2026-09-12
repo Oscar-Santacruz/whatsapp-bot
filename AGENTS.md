@@ -55,6 +55,7 @@ Defaults documentados al lado de cada variable:
 | `ORG_INBOUND_ROUTES` | — | JSON `{ "<orgId>": { "url", "secret" } }`. Ruteo del webhook omnichannel por sesión, para que cada producto reciba lo suyo. Roto o ausente → todo cae al default. |
 | `ORG_INBOUND_WEBHOOK_URL` | — | Endpoint del panel para las orgs **sin** ruta propia (hoy: flota) |
 | `ORG_INBOUND_WEBHOOK_SECRET` | — | HMAC secret de ese destino por defecto |
+| `ORG_INBOUND_RESOLVE_PARTICIPANT_PN` | — | orgIds separados por coma a los que el webhook omnichannel les completa `participantPn` en grupos cuando WhatsApp manda al participante sólo como LID (sale de la metadata del grupo) y busca el nombre en la agenda. Para las demás sesiones el payload no cambia. Hoy: `asemara`. |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | Para upload de media |
 
 ## Anti-ban (lib/queue.js)
