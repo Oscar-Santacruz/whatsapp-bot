@@ -21,6 +21,7 @@ import {
     enqueueVideo,
     enqueueAudio,
     enqueueSticker,
+    enqueueLocation,
     enqueueStatus,
     checkStatusRateLimit,
     setSocketProvider,
@@ -333,6 +334,55 @@ app.post('/send-sticker', requireAuth, async (req, res) => {
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send-sticker] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+const esCoordenada = (valor, limite) =>
+    typeof valor === 'number' && Number.isFinite(valor) && Math.abs(valor) <= limite
+
+const textoOpcional = (valor) =>
+    typeof valor === 'string' && valor.trim() ? valor.trim().slice(0, 200) : null
+
+/**
+ * POST /send-location
+ *
+ * Manda una ubicación con pin: el cliente la ve como tarjeta de mapa y la abre
+ * con un toque en Google Maps o Waze.
+ * Body:
+ *   orgId      string
+ *   phone      string
+ *   latitude   number  — grados decimales, -90 a 90
+ *   longitude  number  — grados decimales, -180 a 180
+ *   name       string? — título de la tarjeta (el nombre del local)
+ *   address    string? — renglón de abajo (la dirección)
+ */
+app.post('/send-location', requireAuth, async (req, res) => {
+    try {
+        const { phone, latitude, longitude, name, address, orgId } = req.body
+        if (!phone || !orgId) {
+            return res.status(400).json({ error: 'Missing phone or orgId' })
+        }
+        if (!esCoordenada(latitude, 90) || !esCoordenada(longitude, 180)) {
+            return res.status(400).json({ error: 'latitude/longitude must be numbers in range' })
+        }
+
+        const session = getSession(orgId)
+        if (!session) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jobId = enqueueLocation({
+            orgId,
+            phone,
+            latitude,
+            longitude,
+            name: textoOpcional(name),
+            address: textoOpcional(address),
+        })
+        res.status(202).json({ status: 'queued', jobId })
+    } catch (error) {
+        console.error(`[/send-location] Error:`, error.message)
         res.status(500).json({ error: error.message })
     }
 })
