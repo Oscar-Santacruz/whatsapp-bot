@@ -153,3 +153,35 @@ test('la metadata de un grupo que no contesta no demora la entrega', async () =>
     assert.ok(Date.now() - t0 < 4000)
     saas.cerrar()
 })
+
+test('con la consulta de la foto colgada, el segundo mensaje no espera el tope', async () => {
+    const saas = await saasFalso()
+    const mod = await importarLimpio(saas.url)
+    const sock = sockLento()
+
+    await mod.maybeEmitOrgInboundWebhook('org-colgada-2', mensaje(PN, 'C-1'), sock)
+    const t0 = Date.now()
+    await mod.maybeEmitOrgInboundWebhook('org-colgada-2', mensaje(PN, 'C-2'), sock)
+    const demora = Date.now() - t0
+
+    assert.equal(saas.payloads.length, 2)
+    assert.ok(demora < 1000, `el segundo tardó ${demora}ms`)
+    assert.equal(sock.llamadas.foto, 1)
+    saas.cerrar()
+})
+
+test('una foto que falla por timeout no se vuelve a pedir en cada mensaje', async () => {
+    const saas = await saasFalso()
+    const mod = await importarLimpio(saas.url)
+    const error = Object.assign(new Error('Timed Out'), { output: { statusCode: 408 } })
+    const sock = sockLento({ demoraFotoMs: 10, fotoError: error })
+
+    await mod.maybeEmitOrgInboundWebhook('org-foto-timeout', mensaje(PN, 'X-1'), sock)
+    const t0 = Date.now()
+    await mod.maybeEmitOrgInboundWebhook('org-foto-timeout', mensaje(PN, 'X-2'), sock)
+
+    assert.equal(saas.payloads.length, 2)
+    assert.equal(sock.llamadas.foto, 1)
+    assert.ok(Date.now() - t0 < 1000)
+    saas.cerrar()
+})
