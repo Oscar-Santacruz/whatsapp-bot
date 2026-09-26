@@ -238,6 +238,39 @@ app.post('/send', requireAuth, async (req, res) => {
     }
 })
 
+// "Escribiendo..." en el chat, sin mandar nada. Lo usa el asistente de
+// KuSystem mientras junta los mensajes que el cliente manda en ráfaga: el
+// cliente ve que alguien le está por contestar. No pasa por la cola porque no
+// es un envío: es instantáneo y no cuenta para el anti-ban. WhatsApp apaga el
+// indicador solo a los ~25 s, o antes con `paused` o con el mensaje real.
+const PRESENCE_STATES = new Set(['composing', 'recording', 'paused', 'available'])
+
+app.post('/presence', requireAuth, async (req, res) => {
+    try {
+        const { phone, orgId } = req.body
+        const state = req.body.state ?? 'composing'
+        if (!phone || !orgId) {
+            return res.status(400).json({ error: 'Missing phone or orgId' })
+        }
+        if (!PRESENCE_STATES.has(state)) {
+            return res.status(400).json({ error: `Invalid state: ${state}` })
+        }
+
+        const session = getSession(orgId)
+        if (!session?.isConnected || !session?.sock) {
+            return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+        }
+
+        const jid = phone.includes('@') ? phone : `${phone.replace(/[\+\-\s\(\)]/g, '')}@s.whatsapp.net`
+        try { await session.sock.presenceSubscribe(jid) } catch {}
+        await session.sock.sendPresenceUpdate(state, jid)
+        res.status(200).json({ status: 'ok', state })
+    } catch (error) {
+        console.error(`[/presence] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.post('/send-document', requireAuth, async (req, res) => {
     try {
         const { phone, file, fileName, mimetype, orgId } = req.body
