@@ -12,6 +12,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { createHmac } from 'node:crypto'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// El módulo lee las rutas registradas de la base (bot.db en DATA_DIR): se le da
+// una carpeta propia ANTES del primer import, para no tocar la base de nadie.
+process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'bot-ruteo-'))
 
 const SUPABASE_ENV = {
     SUPABASE_URL: 'https://fake.supabase.co',
@@ -157,4 +164,126 @@ test('una entrada sin secret se descarta sola, sin arrastrar al resto del mapa',
 
     bueno.cerrar()
     porDefecto.cerrar()
+})
+
+/** Registra una ruta como lo hace el PUT: directo en la base que lee la entrega. */
+async function registrar(orgId, url, secret) {
+    const { upsertOrgInboundRoute } = await import('../lib/db.js')
+    upsertOrgInboundRoute({ orgId, url, secret })
+}
+
+test('una ruta registrada por la app lleva la org a su SAAS, con su propio secret', async () => {
+    const kusystem = await saasFalso()
+    const porDefecto = await saasFalso()
+    const ORG_NUEVA = '2ed13699-0edc-4af7-9078-7b841a02aac5'
+
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: porDefecto.url,
+        ORG_INBOUND_WEBHOOK_SECRET: 'secreto-por-defecto',
+        ORG_INBOUND_ROUTES: '',
+    })
+    await registrar(ORG_NUEVA, kusystem.url, 'secreto-registrado')
+
+    await mod.maybeEmitOrgInboundWebhook(ORG_NUEVA, mensajeDeTexto('M-REG', 'hola tienda'))
+    await mod.maybeEmitOrgInboundWebhook('otra-org', mensajeDeTexto('M-DEF', 'hola flota'))
+
+    assert.equal(kusystem.entregas.length, 1, 'la org registrada entrega en su SAAS, sin tocar el env')
+    assert.equal(kusystem.entregas[0].orgId, ORG_NUEVA)
+    assert.equal(
+        kusystem.entregas[0].firma,
+        firmaEsperada('secreto-registrado', kusystem.entregas[0].body),
+        'firma con el secret que registró la app'
+    )
+    assert.equal(porDefecto.entregas.length, 1, 'la org sin ruta sigue cayendo al default')
+    assert.equal(porDefecto.entregas[0].orgId, 'otra-org')
+
+    kusystem.cerrar()
+    porDefecto.cerrar()
+})
+
+test('la ruta del env le gana a la registrada para la misma org', async () => {
+    const delOperador = await saasFalso()
+    const registrado = await saasFalso()
+    const ORG = 'org-en-los-dos'
+
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: registrado.url,
+        ORG_INBOUND_WEBHOOK_SECRET: 'secreto-por-defecto',
+        ORG_INBOUND_ROUTES: JSON.stringify({ [ORG]: { url: delOperador.url, secret: 'secreto-del-operador' } }),
+    })
+    await registrar(ORG, registrado.url, 'secreto-registrado')
+
+    await mod.maybeEmitOrgInboundWebhook(ORG, mensajeDeTexto('M-ENV', 'hola'))
+
+    assert.equal(delOperador.entregas.length, 1, 'lo que el operador puso en el env manda')
+    assert.equal(registrado.entregas.length, 0)
+    assert.equal(
+        delOperador.entregas[0].firma,
+        firmaEsperada('secreto-del-operador', delOperador.entregas[0].body)
+    )
+    // El diagnóstico sale de la misma decisión que la entrega: no puede decir otra cosa.
+    assert.equal(mod.describeInboundRoute(ORG).source, 'env')
+
+    delOperador.cerrar()
+    registrado.cerrar()
+})
+
+test('describeInboundRoute dice de dónde sale el destino y nunca el secret', async () => {
+    const ORG_ENV = 'org-en-el-env'
+    const ORG_REG = 'org-registrada'
+
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: 'https://flota.ejemplo.test/inbound',
+        ORG_INBOUND_WEBHOOK_SECRET: 'secreto-por-defecto',
+        ORG_INBOUND_ROUTES: JSON.stringify({ [ORG_ENV]: { url: 'https://env.ejemplo.test/x', secret: 'secreto-env' } }),
+    })
+    await registrar(ORG_REG, 'https://reg.ejemplo.test/y', 'secreto-reg')
+
+    assert.deepEqual(mod.describeInboundRoute(ORG_ENV), { source: 'env', host: 'env.ejemplo.test' })
+    assert.deepEqual(mod.describeInboundRoute(ORG_REG), { source: 'registered', host: 'reg.ejemplo.test' })
+    assert.deepEqual(mod.describeInboundRoute('cualquiera'), { source: 'default', host: 'flota.ejemplo.test' })
+
+    assert.equal(mod.hasOwnInboundRoute(ORG_ENV), true)
+    assert.equal(mod.hasOwnInboundRoute(ORG_REG), true)
+    assert.equal(mod.hasOwnInboundRoute('cualquiera'), false, 'caer al default no es tener ruta propia')
+
+    const todo = JSON.stringify([ORG_ENV, ORG_REG, 'cualquiera'].map((o) => mod.describeInboundRoute(o)))
+    assert.ok(!/secreto-|\/x"|\/y"|\/inbound/.test(todo), 'ni el secret ni el path salen de acá')
+})
+
+test('un destino por defecto sin secret no cuenta como destino, ni en la entrega ni en el diagnóstico', async () => {
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: 'https://flota.ejemplo.test/inbound',
+        ORG_INBOUND_WEBHOOK_SECRET: '',
+        ORG_INBOUND_ROUTES: '',
+    })
+
+    assert.deepEqual(mod.describeInboundRoute('huerfana'), { source: 'none', host: null })
+    assert.equal(mod.hasOwnInboundRoute('huerfana'), false)
+})
+
+test('si falla la lectura de la ruta registrada, el mensaje no cae a flota ni tira', async () => {
+    const porDefecto = await saasFalso()
+    const mod = await importarLimpio({
+        ORG_INBOUND_WEBHOOK_URL: porDefecto.url,
+        ORG_INBOUND_WEBHOOK_SECRET: 'secreto-por-defecto',
+        ORG_INBOUND_ROUTES: '',
+    })
+    const { db } = await import('../lib/db.js')
+
+    db.exec('ALTER TABLE org_inbound_routes RENAME TO org_inbound_routes_apagada')
+    try {
+        await assert.doesNotReject(() =>
+            mod.maybeEmitOrgInboundWebhook('org-sin-ruta', mensajeDeTexto('M-DB', 'hola'))
+        )
+        assert.equal(
+            porDefecto.entregas.length,
+            0,
+            'una base rota no manda los mensajes de una sesión de KuSystem al destino por defecto'
+        )
+        assert.throws(() => mod.describeInboundRoute('org-sin-ruta'), 'el diagnóstico no inventa una respuesta')
+    } finally {
+        db.exec('ALTER TABLE org_inbound_routes_apagada RENAME TO org_inbound_routes')
+        porDefecto.cerrar()
+    }
 })

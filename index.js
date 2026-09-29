@@ -31,8 +31,11 @@ import { createBatch, getBatch } from './lib/batch.js'
 import {
     upsertInboundWebhook,
     getInboundWebhook,
-    deleteInboundWebhook
+    deleteInboundWebhook,
+    upsertOrgInboundRoute
 } from './lib/db.js'
+import { describeInboundRoute, hasOwnInboundRoute } from './lib/org-inbound-webhook.js'
+import { esOrgIdRegistrable, validarRutaInbound } from './lib/inbound-route.js'
 import { countContacts, getContactJids } from './lib/contacts.js'
 import { getProfilePictureCached } from './lib/profile-picture-cache.js'
 import { getGroupMeta, setGroupMeta } from './lib/group-cache.js'
@@ -147,21 +150,34 @@ app.post('/api/pair', requireAuth, async (req, res) => {
     }
 })
 
+// `inboundRouted`: si el webhook omnichannel de la org tiene ruta propia (env o
+// registrada) o cae al destino por defecto. La app lo mira para saber si tiene
+// que registrar la suya (PUT /api/org-inbound-routes/:orgId).
 app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     const { orgId } = req.params
     if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
 
+    // null = no se pudo leer la ruta (falló la base): la app solo registra la suya
+    // con `=== false`, y este endpoint es el que polea el QR: no puede colgarse.
+    let inboundRouted = null
+    try {
+        inboundRouted = hasOwnInboundRoute(orgId)
+    } catch (e) {
+        console.error(`[/api/status ${orgId}] no se pudo leer la ruta inbound: ${e.message}`)
+    }
+    const responder = (status, body) => res.status(status).json({ ...body, inboundRouted })
+
     const session = getSession(orgId)
     if (!session) {
-        return res.status(200).json({ connected: false, qr: null, pairingCode: null, error: 'No session initialized.' })
+        return responder(200, { connected: false, qr: null, pairingCode: null, error: 'No session initialized.' })
     }
 
     if (session.isConnected) {
-        return res.status(200).json({ connected: true, qr: null, pairingCode: null, phone: session.sock?.user?.id ?? null })
+        return responder(200, { connected: true, qr: null, pairingCode: null, phone: session.sock?.user?.id ?? null })
     }
 
     if (session.pairingCode) {
-        return res.status(200).json({
+        return responder(200, {
             connected: false,
             qr: null,
             pairingCode: session.pairingCode,
@@ -170,7 +186,7 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     }
 
     if (session.pairingError) {
-        return res.status(200).json({
+        return responder(200, {
             connected: false,
             qr: null,
             pairingCode: null,
@@ -181,13 +197,13 @@ app.get('/api/status/:orgId', requireAuth, async (req, res) => {
     if (session.qr) {
         try {
             const qrBase64 = await qrcode_web.toDataURL(session.qr)
-            return res.status(200).json({ connected: false, qr: qrBase64, pairingCode: null })
+            return responder(200, { connected: false, qr: qrBase64, pairingCode: null })
         } catch {
-            return res.status(500).json({ connected: false, error: 'Error generating QR' })
+            return responder(500, { connected: false, error: 'Error generating QR' })
         }
     }
 
-    return res.status(200).json({ connected: false, qr: null, pairingCode: null })
+    return responder(200, { connected: false, qr: null, pairingCode: null })
 })
 
 // TEST ONLY — envío sync sin queue ni delay anti-ban
@@ -778,6 +794,56 @@ app.delete('/api/inbound-webhooks/:orgId', requireAuth, (req, res) => {
     }
 })
 
+// ── Rutas del webhook omnichannel: registro por la app dueña de la sesión ─────
+//
+// PUT /api/org-inbound-routes/:orgId  body { url, secret } → registra a dónde
+//     van los mensajes entrantes de esa sesión. Lo llama KuSystem al vincular la
+//     línea de un tenant: sin esto hay que sumar la org a ORG_INBOUND_ROUTES a
+//     mano, y una org que nadie sumó no falla, pierde mensajes en silencio.
+// GET /api/org-inbound-routes/:orgId  → a dónde va hoy y por qué (nunca el secret).
+//
+// ORG_INBOUND_ROUTES sigue mandando: si la org está ahí, la registrada no rige.
+
+app.put('/api/org-inbound-routes/:orgId', requireAuth, (req, res) => {
+    try {
+        const { orgId } = req.params
+        if (!esOrgIdRegistrable(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+
+        const ruta = validarRutaInbound(req.body)
+        if (!ruta.ok) return res.status(400).json({ error: ruta.error })
+
+        const antes = describeInboundRoute(orgId)
+        upsertOrgInboundRoute({ orgId, url: ruta.url, secret: ruta.secret })
+        // Lo que rige ahora, leído de la misma decisión que usa la entrega: si la
+        // org está en ORG_INBOUND_ROUTES, la registrada se guarda pero no rige.
+        const despues = describeInboundRoute(orgId)
+
+        // Qué destino había y cuál hay ahora: una org que cambia de destino por un
+        // orgId equivocado del cliente tiene que quedar a la vista.
+        console.log(
+            `[org-inbound] ruta registrada ${orgId}: ${antes.source} (${antes.host ?? '-'}) → ${despues.source} (${despues.host})`
+        )
+        if (despues.source === 'env') {
+            console.warn(`[org-inbound] ${orgId} también está en ORG_INBOUND_ROUTES: la registrada no rige`)
+        }
+        res.status(200).json({ ok: true, effective: despues.source, previous: antes.source })
+    } catch (e) {
+        console.error('[/api/org-inbound-routes PUT] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
+app.get('/api/org-inbound-routes/:orgId', requireAuth, (req, res) => {
+    try {
+        const { orgId } = req.params
+        if (!esOrgIdRegistrable(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+        res.status(200).json({ orgId, ...describeInboundRoute(orgId) })
+    } catch (e) {
+        console.error('[/api/org-inbound-routes GET] Error:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
 app.post('/logout', requireAuth, async (req, res) => {
     try {
         const { orgId } = req.body
@@ -790,6 +856,17 @@ app.post('/logout', requireAuth, async (req, res) => {
         console.error(`[/logout] Error:`, error.message)
         res.status(500).json({ error: error.message })
     }
+})
+
+// Un body JSON roto no se cita ni en el log ni en la respuesta: body-parser copia
+// un pedazo del texto en el mensaje de error, y en PUT /api/org-inbound-routes
+// ese texto trae un secret (un curl con $SECRET sin comillas alcanza).
+app.use((err, req, res, next) => {
+    if (err?.type === 'entity.parse.failed') {
+        console.warn(`[http] ${req.method} ${req.path}: body JSON inválido`)
+        return res.status(400).json({ error: 'Invalid JSON body' })
+    }
+    next(err)
 })
 
 app.listen(PORT, () => {
