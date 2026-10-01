@@ -34,7 +34,8 @@ import {
     deleteInboundWebhook,
     upsertOrgInboundRoute
 } from './lib/db.js'
-import { describeInboundRoute, hasOwnInboundRoute } from './lib/org-inbound-webhook.js'
+import { describeInboundRoute, hasOwnInboundRoute, ownRouteSecret, signMediaPaths } from './lib/org-inbound-webhook.js'
+import { firmarMedia, TTL_SEGUNDOS as MEDIA_TTL_SEGUNDOS } from './lib/media-firmar.js'
 import { esOrgIdRegistrable, validarRutaInbound } from './lib/inbound-route.js'
 import { countContacts, getContactJids } from './lib/contacts.js'
 import { getProfilePictureCached } from './lib/profile-picture-cache.js'
@@ -841,6 +842,25 @@ app.get('/api/org-inbound-routes/:orgId', requireAuth, (req, res) => {
     } catch (e) {
         console.error('[/api/org-inbound-routes GET] Error:', e.message)
         res.status(500).json({ error: e.message })
+    }
+})
+
+// POST /media/firmar  body { ts, paths } + X-Hub-Signature-256 → { urls: { path: url } }
+// Firma (TTL 1 h) la media del bucket privado para la app dueña de la sesión, así
+// KuSystem no necesita la service_role de este Supabase. SIN requireAuth a
+// propósito: se autentica con el secret de la ruta de cada org (ver lib/media-firmar.js).
+app.post('/media/firmar', async (req, res) => {
+    try {
+        const r = await firmarMedia({
+            body: req.body,
+            signature: req.headers['x-hub-signature-256'],
+            secretPropio: ownRouteSecret,
+            firmar: (paths) => signMediaPaths(paths, MEDIA_TTL_SEGUNDOS),
+        })
+        res.status(r.status).json(r.body)
+    } catch (e) {
+        console.error('[/media/firmar] Error:', e.message)
+        res.status(500).json({ error: 'Internal error' })
     }
 })
 
