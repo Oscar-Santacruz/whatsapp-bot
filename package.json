@@ -6,7 +6,7 @@
     "type": "module",
     "scripts": {
         "start": "node index.js",
-        "test": "node --test --test-force-exit \"test/*.test.mjs\""
+        "test": "node --expose-gc --test --test-force-exit \"test/*.test.mjs\""
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.105.4",
