@@ -65,7 +65,8 @@ Defaults documentados al lado de cada variable:
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | Para upload de media |
 
 ## Respuesta citada (lib/quoted.js)
-- `/send` y `/send-batch` aceptan `quotedMessageId`: el texto sale como respuesta a ese mensaje, en todas las sesiones. Baileys cita con `sendMessage(jid, content, { quoted })` (key + message del store, con el `participant` en grupos); puesto dentro del contenido lo ignora.
+- `/send` y `/send-batch` aceptan `quotedMessageId`: el texto sale como respuesta a ese mensaje, en todas las sesiones. Baileys cita con `sendMessage(jid, content, { quoted })` (key + message del store, con el `participant` en grupos); puesto dentro del contenido lo ignora. `/send-image` también lo acepta.
+- `/send` y `/send-image` aceptan además `quotedJobId`: el `jobId` que devolvió un envío anterior de la misma sesión. Sirve para responderle a un mensaje propio recién encolado, cuyo id de WhatsApp todavía no existe (flota manda la tarjeta de un comprobante rechazado y la foto del comprobante como respuesta a la tarjeta). La cola guarda el id con el que salió cada envío (`outgoing_queue.sent_message_id`) y, como una sesión sale en orden, lo resuelve cuando le toca al que cita. Si el envío citado falló, es de otra sesión o de otro chat, el mensaje sale igual, sin cita, y queda en el log (`no salió por esta sesión` / `no tengo el mensaje … para citarlo`).
 - Sólo se cita un mensaje del chat de destino. En un privado el mensaje puede haber llegado con el jid `@lid` y la respuesta salir por el número: se busca por id entre los `@lid` de la sesión y se cita si ese LID es el mismo contacto (store local de Baileys).
 - Si el mensaje no es de ese chat o ya se limpió del store (7 días), la respuesta sale igual, sin cita, y queda un `no tengo el mensaje … para citarlo` en el log.
 

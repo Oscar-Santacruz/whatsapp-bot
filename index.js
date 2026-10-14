@@ -234,9 +234,14 @@ app.post('/send-sync', requireAuth, async (req, res) => {
     }
 })
 
+// Responder a un mensaje: `quotedMessageId` es su id de WhatsApp; `quotedJobId`, el `jobId` que devolvió
+// el envío anterior al que se responde (quien encola no conoce el id del mensaje hasta que sale). Un
+// `quotedJobId` que no es un número de envío se ignora: el mensaje sale igual, sin cita.
+const envioCitado = (valor) => (Number.isInteger(valor) && valor > 0 ? valor : null)
+
 app.post('/send', requireAuth, async (req, res) => {
     try {
-        const { phone, message, orgId, quotedMessageId } = req.body
+        const { phone, message, orgId, quotedMessageId, quotedJobId } = req.body
         if (!phone || !message || !orgId) {
             return res.status(400).json({ error: 'Missing phone, message, or orgId' })
         }
@@ -246,7 +251,7 @@ app.post('/send', requireAuth, async (req, res) => {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
 
-        const jobId = enqueueText({ orgId, phone, message, quotedMessageId })
+        const jobId = enqueueText({ orgId, phone, message, quotedMessageId, quotedJobId: envioCitado(quotedJobId) })
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send] Error:`, error.message)
@@ -309,7 +314,7 @@ app.post('/send-document', requireAuth, async (req, res) => {
 
 app.post('/send-image', requireAuth, async (req, res) => {
     try {
-        const { phone, file, mimetype, caption, orgId } = req.body
+        const { phone, file, mimetype, caption, orgId, quotedMessageId, quotedJobId } = req.body
         if (!phone || !file || !orgId) {
             return res.status(400).json({ error: 'Missing phone, file, or orgId' })
         }
@@ -319,7 +324,11 @@ app.post('/send-image', requireAuth, async (req, res) => {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
 
-        const jobId = enqueueImage({ orgId, phone, file, mimetype, caption })
+        const jobId = enqueueImage({
+            orgId, phone, file, mimetype, caption,
+            quotedMessageId,
+            quotedJobId: envioCitado(quotedJobId),
+        })
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send-image] Error:`, error.message)
