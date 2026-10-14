@@ -47,6 +47,14 @@ No hay paso de build (`npm start` directo desde `index.js`).
 - **Nada opcional puede frenar la entrega.** La foto de perfil y la metadata de grupo son consultas a WhatsApp con el timeout de Baileys (60 s), y con contactos nuevos a veces no vuelven: esperarlas demoraba un minuto el primer mensaje de cada conversación (y con él la respuesta del bot de captación de KuSystem). Van con `withinBudget` (2,5 s); si no llegan, el payload sale con `null` y la consulta termina en segundo plano llenando el caché. Sólo el primer mensaje espera el tope: los que llegan con la consulta de la foto todavía abierta salen sin esperar, y un timeout se recuerda 10 min (`FAILED_TTL_MS`) para no repreguntar en cada mensaje. La foto se pide en paralelo con la subida del media. Una demora de preparación ≥ 3 s se loguea con el desglose por paso (`preparación lenta`), y un mensaje en vivo que Baileys entrega ≥ 15 s tarde, como `mensaje recibido Ns después de enviado`.
 - No loguear `ORG_INBOUND_ROUTES` ni `err.message` de su `JSON.parse`: el valor tiene secrets adentro y Node cita un pedazo del input cuando la basura está al principio. Lo mismo vale para el body del `PUT /api/org-inbound-routes`: un JSON roto responde 400 sin citarlo (`entity.parse.failed`), porque body-parser copia un pedazo del texto y ahí viaja un secret.
 
+## Media firmada para las apps (`POST /media/firmar`)
+- El bucket privado `conversaciones` vive en el Supabase de ESTE bot. Las apps (KuSystem) no tienen su service_role: piden URLs firmadas acá (`lib/media-firmar.js`). No agregues endpoints que devuelvan la llave ni descarguen bytes por ellas.
+- Body `{ ts, paths }` + header `X-Hub-Signature-256` = HMAC-SHA256 de `${ts}
+${paths.join('
+')}` con el secret de la ruta de entrada de la org (el mismo con el que el bot firma sus webhooks). `ts` en segundos, ±5 min. Máx. 100 paths, TTL 1 h.
+- El orgId sale del prefijo de cada path; toda org del pedido necesita ruta PROPIA (env o registrada) cuyo secret verifique la firma. Las orgs que caen al destino por defecto (flota) no se pueden pedir. Sin `requireAuth` a propósito: el API_TOKEN es global y no distingue apps.
+- No loguear paths enteros ni firmas.
+
 ## Configuración por env (`.env`)
 Defaults documentados al lado de cada variable:
 
