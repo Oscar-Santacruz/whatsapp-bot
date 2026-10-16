@@ -28,6 +28,7 @@ import {
     resumeAllWorkers
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
+import { validarItemsBatch } from './lib/batch-items.js'
 import {
     upsertInboundWebhook,
     getInboundWebhook,
@@ -546,6 +547,10 @@ app.post('/send-batch', requireAuth, async (req, res) => {
         if (!session) {
             return res.status(503).json({ error: 'No session. Call /api/connect first.' })
         }
+
+        // Antes de crear el batch: un ítem que no se encola dejaría el batch sin completar nunca.
+        const invalido = validarItemsBatch(messages)
+        if (invalido) return res.status(400).json({ error: `Invalid messages: ${invalido}` })
 
         const batchId = createBatch(orgId, messages.length, callbackUrl)
 
