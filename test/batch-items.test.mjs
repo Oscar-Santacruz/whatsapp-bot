@@ -30,7 +30,9 @@ test('rechaza un ítem sin mensaje ni medio, con su índice', () => {
 
 test('rechaza un ítem sin phone o que no es un objeto', () => {
     assert.match(validarItemsBatch([{ message: 'hola' }]), /messages\[0\]: falta phone/)
-    assert.match(validarItemsBatch([{ phone: 595981000001, message: 'hola' }]), /falta phone/)
+    assert.equal(validarItemsBatch([{ phone: 595981000001, message: 'hola' }]), null, 'un phone numérico se acepta')
+    assert.match(validarItemsBatch([{ phone: NaN, message: 'hola' }]), /falta phone/)
+    assert.match(validarItemsBatch([{ phone: '  ', message: 'hola' }]), /falta phone/)
     assert.match(validarItemsBatch([null]), /no es un objeto/)
     assert.match(validarItemsBatch(['hola']), /no es un objeto/)
 })
