@@ -62,6 +62,8 @@ Defaults documentados al lado de cada variable:
 | `ORG_INBOUND_WEBHOOK_URL` | — | Endpoint del panel para las orgs **sin** ruta propia (hoy: flota) |
 | `ORG_INBOUND_WEBHOOK_SECRET` | — | HMAC secret de ese destino por defecto |
 | `ORG_INBOUND_RESOLVE_PARTICIPANT_PN` | — | orgIds separados por coma a los que el webhook omnichannel les completa `participantPn` en grupos cuando WhatsApp manda al participante sólo como LID (sale de la metadata del grupo) y busca el nombre en la agenda. Para las demás sesiones el payload no cambia. Hoy: `asemara`. |
+| `ORG_INBOUND_STATUS_EVENTS` | — | orgIds separados por coma que además reciben `message.status` (header `X-Wa-Event: message.status`): `status` `error` con el `errorCode` de WhatsApp cuando el servidor rechaza un envío, y `delivered` la primera vez que llega a alguien. `sendMessage` resuelve sin esperar al servidor, así que sin esto un rechazo no se ve. El rechazo se loguea siempre, para todas las sesiones (`WhatsApp rechazó el envío …`). Hoy: `asemara`. |
+| `BAILEYS_LOG_LEVEL` | `warn` | Nivel del logger de Baileys (pino). En `silent` se perdían los avisos de rechazo (479, 463) y de descifrado. |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | Para upload de media |
 
 ## Respuesta citada (lib/quoted.js)
