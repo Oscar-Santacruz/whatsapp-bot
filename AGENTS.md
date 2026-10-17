@@ -114,3 +114,7 @@ Match por intención, no por string literal. Ejemplos en español + inglés:
 | Cerrar y desplegar | "commit, build, push, deploy", "usa cli de render", "ship it" | 4-7 |
 | Persistir | "guarda esto en memoria", "save to memory and AGENTS.md" | 8-9 |
 | Archivar | "archiva", "wrap up", "session summary" | 10 |
+
+## Envíos que WhatsApp rechaza (lib/queue.js, `handleServerRejection`)
+- `sendMessage` vuelve cuando el mensaje sale del socket, no cuando el servidor lo acepta, y Baileys emite el eco propio enseguida: el envío queda `sent` y el panel lo muestra como mandado aunque después WhatsApp lo rechace y no le llegue a nadie. El rechazo llega como `messages.update` con `status: ERROR` y el código en `messageStubParameters` (479 en grupos: sender key o sesión vieja de algún dispositivo).
+- Ese evento marca el envío `failed` con `rechazado por WhatsApp (<código>)` y lo loguea. En un grupo, la primera vez olvida la `sender-key-memory` del grupo y lo reencola (`rejected_resends`), así Baileys reparte la sender key de nuevo a todos los dispositivos. El original no le llegó a nadie: el reenvío no duplica (el panel sí ve un segundo eco con otro id).
