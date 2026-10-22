@@ -28,6 +28,7 @@ import {
     resumeAllWorkers
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
+import { listStoredMessages } from './lib/store.js'
 import { validarItemsBatch } from './lib/batch-items.js'
 import {
     upsertInboundWebhook,
@@ -516,6 +517,33 @@ app.get('/api/contacts/:orgId', requireAuth, (req, res) => {
         res.json({ orgId, count: countContacts(orgId) })
     } catch (error) {
         console.error(`[/api/contacts] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * GET /api/admin/message-store?from=<ISO|ms>&to=<ISO|ms>[&orgId=<id>][&limit=<n>]
+ *
+ * Solo lectura. Lista lo que el bot guardó en `message_store` (hora de llegada en [from, to)), con el
+ * mensaje completo. Para auditar una ventana en la que el destino del webhook no persistió.
+ */
+app.get('/api/admin/message-store', requireAuth, (req, res) => {
+    try {
+        const parse = (v) => {
+            if (v == null || v === '') return NaN
+            return /^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v))
+        }
+        const fromMs = parse(req.query.from)
+        const toMs = parse(req.query.to)
+        if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
+            return res.status(400).json({ error: 'from y to son obligatorios (ISO o ms) y to > from' })
+        }
+        const limit = Math.min(Math.max(Number(req.query.limit) || 5000, 1), 20000)
+        const orgId = typeof req.query.orgId === 'string' && req.query.orgId ? req.query.orgId : null
+        const messages = listStoredMessages({ orgId, fromMs, toMs, limit })
+        res.json({ count: messages.length, messages })
+    } catch (error) {
+        console.error('[/api/admin/message-store] Error:', error.message)
         res.status(500).json({ error: error.message })
     }
 })
