@@ -11,7 +11,8 @@ import {
     getCurrentlyConnectingOrgId,
     purgeCorruptSession,
     requestPairingSession,
-    hasLinkedNumber
+    hasLinkedNumber,
+    replayStoredMessage
 } from './lib/whatsapp.js'
 import {
     enqueueText,
@@ -28,7 +29,7 @@ import {
     resumeAllWorkers
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
-import { listStoredMessages } from './lib/store.js'
+import { listStoredMessages, getStoredWaMessage } from './lib/store.js'
 import { validarItemsBatch } from './lib/batch-items.js'
 import {
     upsertInboundWebhook,
@@ -544,6 +545,55 @@ app.get('/api/admin/message-store', requireAuth, (req, res) => {
         res.json({ count: messages.length, messages })
     } catch (error) {
         console.error('[/api/admin/message-store] Error:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * POST /api/admin/replay  { items: [{ orgId, messageId }], dryRun?: boolean }
+ *
+ * Reenvía al SAAS mensajes de `message_store` que no llegaron a persistirse. Lista explícita de ids (nada de
+ * "toda la ventana"), tope de 200, de a uno con pausa. `dryRun` es true salvo que se mande `false`: solo
+ * dice qué encontraría. El SAAS guarda cada mensaje sin contestar (payload `replay`) y es idempotente por
+ * (org, messageId), así que correrlo dos veces no duplica.
+ */
+app.post('/api/admin/replay', requireAuth, async (req, res) => {
+    try {
+        const items = req.body?.items
+        const dryRun = req.body?.dryRun !== false
+        if (!Array.isArray(items) || items.length === 0 || items.length > 200) {
+            return res.status(400).json({ error: 'items: lista de 1 a 200 { orgId, messageId }' })
+        }
+        const results = []
+        for (const it of items) {
+            const { orgId, messageId } = it ?? {}
+            if (typeof orgId !== 'string' || typeof messageId !== 'string') {
+                results.push({ orgId, messageId, estado: 'item_invalido' })
+                continue
+            }
+            const msg = getStoredWaMessage(orgId, messageId)
+            if (!msg) {
+                results.push({ orgId, messageId, estado: 'no_esta_en_el_store' })
+                continue
+            }
+            if (dryRun) {
+                results.push({ orgId, messageId, estado: 'dry_run', conectado: Boolean(getSession(orgId)?.sock) })
+                continue
+            }
+            const r = await replayStoredMessage(orgId, msg)
+            const kind = r.body?.kind ?? null
+            results.push({
+                orgId,
+                messageId,
+                estado: r.ok && kind !== 'error' ? 'enviado' : 'fallo',
+                motivo: r.motivo ?? (kind === 'error' ? r.body?.message : null),
+                kind,
+            })
+            await new Promise((r2) => setTimeout(r2, 1000))
+        }
+        res.json({ dryRun, count: results.length, results })
+    } catch (error) {
+        console.error('[/api/admin/replay] Error:', error.message)
         res.status(500).json({ error: error.message })
     }
 })
