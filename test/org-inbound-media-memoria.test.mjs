@@ -10,9 +10,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { readdirSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
+
+// Carpeta temporal propia: los otros tests de org-inbound corren en paralelo y
+// crean y borran sus `org-inbound-*` en la temp global, así que contarlos ahí
+// fallaba según el orden en que se cruzaran. `tmpdir()` lee estas variables en
+// cada llamada (TEMP/TMP en Windows, TMPDIR en el resto).
+const TEMP_PROPIO = mkdtempSync(join(tmpdir(), 'test-media-memoria-'))
+process.env.TMPDIR = process.env.TEMP = process.env.TMP = TEMP_PROPIO
 
 const MB = 1024 * 1024
 const TAMANO = 300 * MB
@@ -116,4 +124,5 @@ test('un video de 300 MB se sube sin cargarlo entero en memoria y sin dejar temp
 
     mod.__setMediaDepsForTests()
     srv.cerrar()
+    rmSync(TEMP_PROPIO, { recursive: true, force: true })
 })
