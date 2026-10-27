@@ -26,7 +26,8 @@ import {
     enqueueStatus,
     checkStatusRateLimit,
     setSocketProvider,
-    resumeAllWorkers
+    resumeAllWorkers,
+    startPayloadPurge
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
 import { listStoredMessages, getStoredWaMessage } from './lib/store.js'
@@ -42,6 +43,7 @@ import { esOrgIdRegistrable, validarRutaInbound } from './lib/inbound-route.js'
 import { countContacts, getContactJids } from './lib/contacts.js'
 import { getProfilePictureCached } from './lib/profile-picture-cache.js'
 import { getGroupMeta, setGroupMeta } from './lib/group-cache.js'
+import { startMemoryMonitor } from './lib/memory-monitor.js'
 
 // Baileys lanza errores síncronos de descifrado Noise dentro de listeners del
 // WebSocket cuando las credenciales guardadas ya no son válidas. Esos errores
@@ -961,8 +963,18 @@ app.use((err, req, res, next) => {
     next(err)
 })
 
+// En el contenedor node es PID 1: sin listener propio el kernel descarta el SIGTERM y Render espera hasta el SIGKILL (~30 s más de 502 en cada deploy).
+for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+        console.log(`[Server] ${signal}: saliendo`)
+        process.exit(0)
+    })
+}
+
 app.listen(PORT, () => {
-    console.log(`[Server] WhatsApp API running on port ${PORT}`)
+    console.log(`[Server] WhatsApp API running on port ${PORT} (arranque ${process.uptime().toFixed(1)}s)`)
     loadExistingSessions()
     resumeAllWorkers()
+    startPayloadPurge()
+    startMemoryMonitor()
 })
