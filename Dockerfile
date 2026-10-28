@@ -15,7 +15,8 @@ EXPOSE $PORT
 
 # node directo, sin npm de padre: se ahorra el proceso de npm (memoria) y el flag le llega directo a node.
 # Las señales (SIGTERM del deploy) las atiende el handler de index.js: como PID 1, node no tiene el handler por defecto.
-# El heap por defecto de V8 es la mitad de la RAM del contenedor (~256 MB de 512): ahí se caía con
-# "JavaScript heap out of memory". Con 320, V8 suma la generación joven y el límite real queda en ~368 MB:
-# más ~70 MB nativos y los buffers de media entra en los 512 MB sin que Render mate el contenedor.
-CMD ["node", "--max-old-space-size=320", "index.js"]
+# El heap por defecto de V8 es la mitad de la RAM del contenedor: ahí se caía con "JavaScript heap out of memory".
+# Plan de 2 GB: con 1536, V8 suma la generación joven y el límite real queda en ~1.6 GB; más ~70 MB nativos,
+# la caché de SQLite y los buffers de media entra en los 2 GB sin que Render mate el contenedor.
+# Si se cambia el plan de Render, cambiar este número (y RSS_WARN_MB en lib/memory-monitor.js).
+CMD ["node", "--max-old-space-size=1536", "index.js"]
