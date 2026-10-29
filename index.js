@@ -27,6 +27,7 @@ import {
     checkStatusRateLimit,
     setSocketProvider,
     resumeAllWorkers,
+    getJobStatus,
     startPayloadPurge
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
@@ -690,6 +691,18 @@ app.post('/send-batch', requireAuth, async (req, res) => {
         console.error(`[/send-batch] Error:`, error.message)
         res.status(500).json({ error: error.message })
     }
+})
+
+// GET /api/job/:jobId?orgId=<...> -> { status, error, messageId }
+app.get('/api/job/:jobId', requireAuth, (req, res) => {
+    const jobId = Number(req.params.jobId)
+    const orgId = String(req.query.orgId || '')
+    if (!Number.isInteger(jobId) || jobId <= 0 || !orgId) {
+        return res.status(400).json({ error: 'Missing or invalid jobId/orgId' })
+    }
+    const job = getJobStatus(orgId, jobId)
+    if (!job) return res.status(404).json({ error: 'Job not found' })
+    res.json(job)
 })
 
 app.get('/api/batch/:batchId', requireAuth, (req, res) => {
