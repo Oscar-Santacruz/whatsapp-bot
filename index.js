@@ -1,3 +1,5 @@
+// Primero de todo: envuelve console.* antes de que libsignal loguee una sesión.
+import './lib/log-redact.js'
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
