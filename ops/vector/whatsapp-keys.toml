@@ -1,0 +1,96 @@
+# Filtro de claves de WhatsApp antes de Seq.
+#
+# Se suma al config de Vector que recibe los logs de Render (whatsapp-bot-iptest).
+# Cambiá `inputs` de `wa_keys_drop` por el id real de tu source (ej. el syslog
+# del log stream de Render) y apuntá el sink de Seq a `wa_keys_redact`.
+#
+# Por qué dos pasos:
+# - Primero (`wa_keys_drop`): Render parte la salida por línea, así que un
+#   `console.info("Closing session:", session)` de libsignal llega como ~25
+#   eventos sueltos (`privKey: <Buffer ..>`, `rootKey: <Buffer ..>`, ...).
+#   Esas líneas no tienen arreglo: se descartan.
+# - Después (`wa_keys_redact`): una línea JSON (pino de Baileys) o un texto con
+#   una clave en el medio sí se salva: se reemplaza el valor y el resto sigue.
+#
+# Probar (con un source `render_logs` cualquiera, ej. stdin):
+#   vector test <source>.toml ops/vector/whatsapp-keys.toml
+
+[transforms.wa_keys_drop]
+type = "filter"
+inputs = ["render_logs"] # <- id del source real
+# Fuera: las líneas de un volcado de sesión de libsignal (`<Buffer ..>`, la
+# cabecera `SessionEntry {` y los campos de la sesión que quedaron sin valor).
+condition = '''
+msg = string(.message) ?? ""
+!match(msg, r'<Buffer [0-9a-f]{2}|SessionEntry \{|^\s*(_chains|indexInfo|currentRatchet|ephemeralKeyPair|lastRemoteEphemeralKey|remoteIdentityKey|baseKey|pubKey|registrationId|previousCounter|baseKeyType|chainKey|messageKeys)\b')
+'''
+
+[transforms.wa_keys_redact]
+type = "remap"
+inputs = ["wa_keys_drop"]
+source = '''
+if is_string(.message) {
+  .message = redact(string!(.message), filters: [
+    r'(?i)"?\b(privKey|privateKey|private|rootKey|chainKey|noiseKey|signedPreKey|signedIdentityKey|advSecretKey|ephemeralKeyPair|currentRatchet|creds)"?\s*[:=]\s*("[^"]*"|<Buffer[^>]*>|\{[^{}]*\})'
+  ])
+}
+'''
+
+[[tests]]
+name = "una línea con privKey de un volcado de libsignal no pasa"
+no_outputs_from = ["wa_keys_redact"]
+[[tests.inputs]]
+insert_at = "wa_keys_drop"
+type = "log"
+log_fields.message = "      privKey: <Buffer 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02>"
+
+[[tests]]
+name = "la cabecera Closing session no pasa"
+no_outputs_from = ["wa_keys_redact"]
+[[tests.inputs]]
+insert_at = "wa_keys_drop"
+type = "log"
+log_fields.message = "Closing session: SessionEntry {"
+
+[[tests]]
+name = "un JSON de pino pierde el valor de la clave y sigue"
+[[tests.inputs]]
+insert_at = "wa_keys_drop"
+type = "log"
+log_fields.message = '{"level":40,"org":"asemara","keyPair":{"pubKey":"AAA","privKey":"c2VjcmV0"},"msg":"algo"}'
+[[tests.outputs]]
+extract_from = "wa_keys_redact"
+[[tests.outputs.conditions]]
+type = "vrl"
+source = '''
+assert!(!contains(string!(.message), "c2VjcmV0"))
+assert!(contains(string!(.message), "\"msg\":\"algo\""))
+'''
+
+[[tests]]
+name = "un log normal pasa igual"
+[[tests.inputs]]
+insert_at = "wa_keys_drop"
+type = "log"
+log_fields.message = "[queue:asemara] ✅ sent #123 → 595981000000 (text)"
+[[tests.outputs]]
+extract_from = "wa_keys_redact"
+[[tests.outputs.conditions]]
+type = "vrl"
+source = '''
+assert_eq!(.message, "[queue:asemara] ✅ sent #123 → 595981000000 (text)")
+'''
+
+[[tests]]
+name = "el resumen nuevo del bot pasa (baseKey pública, sin claves)"
+[[tests.inputs]]
+insert_at = "wa_keys_drop"
+type = "log"
+log_fields.message = "Closing session: <SessionEntry [baseKey=BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ==]>"
+[[tests.outputs]]
+extract_from = "wa_keys_redact"
+[[tests.outputs.conditions]]
+type = "vrl"
+source = '''
+assert!(starts_with(string!(.message), "Closing session: <SessionEntry"))
+'''
