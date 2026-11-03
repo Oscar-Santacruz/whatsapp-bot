@@ -33,6 +33,7 @@ const sockOk = {
 }
 setSocketProvider(() => ({ isConnected: true, sock: sockOk }))
 
+const MINUTO = 60_000
 const HORA = 3_600_000
 const DIA = 24 * HORA
 const AHORA = Date.now()
@@ -116,9 +117,10 @@ test('con el reloj adelantado, el sent reciente también se purga', async () => 
 
 test('si la purga corre mientras se procesa el rechazo, queda fallido y no reencolado sin archivo', async () => {
     const grupo = '120363000000000003@g.us'
-    const id = crear({ status: 'sent', hace: 2 * DIA, orgId: 'org-carrera', phone: grupo, sentMessageId: 'WA-CARRERA' })
+    // Recién salido (el rechazo entra en la ventana de reenvío); la purga corre con el reloj adelantado.
+    const id = crear({ status: 'sent', hace: MINUTO, enviadoHace: MINUTO, orgId: 'org-carrera', phone: grupo, sentMessageId: 'WA-CARRERA' })
     // El archivo está al empezar (el chequeo previo pasa), pero la purga corre durante el await de las sender keys.
-    const sock = { authState: { keys: { set: async () => { await purgeFinishedPayloads(AHORA) } } } }
+    const sock = { authState: { keys: { set: async () => { await purgeFinishedPayloads(AHORA + 2 * DIA) } } } }
 
     const r = await handleServerRejection('org-carrera', sock, { remoteJid: grupo, id: 'WA-CARRERA', code: '479' })
     assert.equal(r.action, 'failed')
@@ -131,14 +133,14 @@ test('si la purga corre mientras se procesa el rechazo, queda fallido y no reenc
 
 test('un compound con documento purgado no se reencola; uno sin documento sí', async () => {
     const grupo = '120363000000000004@g.us'
-    const conPdf = crear({ status: 'sent', hace: 2 * DIA, kind: 'compound', orgId: 'org-compound', phone: grupo, sentMessageId: 'WA-C1' })
-    await purgeFinishedPayloads(AHORA)
+    const conPdf = crear({ status: 'sent', hace: MINUTO, enviadoHace: MINUTO, kind: 'compound', orgId: 'org-compound', phone: grupo, sentMessageId: 'WA-C1' })
+    await purgeFinishedPayloads(AHORA + 2 * DIA)
     const r = await handleServerRejection('org-compound', sockOk, { remoteJid: grupo, id: 'WA-C1', code: '479' })
     assert.equal(r.action, 'failed')
     assert.equal(fila(conPdf).status, 'failed')
 
     // Sin documento (document_filename NULL) el compound es solo texto: no necesita archivo y se reenvía.
-    const soloTexto = crear({ status: 'sent', hace: 2 * HORA, kind: 'compound', doc: null, filename: null, orgId: 'org-compound-txt', phone: grupo, sentMessageId: 'WA-C2' })
+    const soloTexto = crear({ status: 'sent', hace: MINUTO, enviadoHace: MINUTO, kind: 'compound', doc: null, filename: null, orgId: 'org-compound-txt', phone: grupo, sentMessageId: 'WA-C2' })
     const r2 = await handleServerRejection('org-compound-txt', sockOk, { remoteJid: grupo, id: 'WA-C2', code: '479' })
     assert.equal(r2.action, 'resent')
     for (let i = 0; i < 400 && fila(soloTexto).status !== 'sent'; i++) await new Promise((r) => setTimeout(r, 50))
@@ -146,15 +148,14 @@ test('un compound con documento purgado no se reencola; uno sin documento sí', 
     assert.equal(fila(soloTexto).rejected_resends, 1)
 })
 
-test('un rechazo tardío de un envío ya purgado queda fallido en vez de reencolarse', async () => {
+test('un rechazo tardío de un envío ya purgado no lo toca ni lo reencola', async () => {
     const grupo = '120363000000000002@g.us'
-    const id = crear({ status: 'sent', hace: 2 * DIA, orgId: 'org-rechazo', phone: grupo, sentMessageId: 'WA-TARDE' })
+    const id = crear({ status: 'sent', hace: 2 * DIA, enviadoHace: 2 * DIA, orgId: 'org-rechazo', phone: grupo, sentMessageId: 'WA-TARDE' })
     await purgeFinishedPayloads(AHORA)
 
     const r = await handleServerRejection('org-rechazo', null, { remoteJid: grupo, id: 'WA-TARDE', code: '479' })
-    assert.equal(r.action, 'failed')
+    assert.equal(r.action, 'ignored')
     const f = fila(id)
-    assert.equal(f.status, 'failed')
-    assert.match(f.error, /rechazado por WhatsApp \(479\).*purg/)
+    assert.equal(f.status, 'sent')
     assert.equal(f.rejected_resends, 0)
 })
