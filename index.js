@@ -24,6 +24,8 @@ import {
     enqueueSticker,
     enqueueLocation,
     enqueueStatus,
+    enqueueDelete,
+    cancelPending,
     checkStatusRateLimit,
     setSocketProvider,
     resumeAllWorkers,
@@ -261,6 +263,51 @@ app.post('/send', requireAuth, async (req, res) => {
         res.status(202).json({ status: 'queued', jobId })
     } catch (error) {
         console.error(`[/send] Error:`, error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * POST /delete  { orgId, items: [{ jid, messageId }] }
+ *
+ * Borra para todos mensajes propios ya enviados. Cada ítem va a la cola de la sesión (con la pausa anti-ban
+ * entre uno y otro) y devuelve su `jobId`, que se sigue con GET /api/job/:jobId. Tope de 200 por llamada.
+ * `jid` tiene que ser el chat completo (`...@g.us` o `...@s.whatsapp.net`), el mismo donde salió el mensaje.
+ */
+app.post('/delete', requireAuth, (req, res) => {
+    try {
+        const { orgId, items } = req.body ?? {}
+        if (typeof orgId !== 'string' || !orgId || !Array.isArray(items) || items.length === 0 || items.length > 200) {
+            return res.status(400).json({ error: 'orgId y items (1 a 200 { jid, messageId })' })
+        }
+        const malos = items.filter((it) => typeof it?.jid !== 'string' || !it.jid.includes('@') || typeof it?.messageId !== 'string' || !it.messageId)
+        if (malos.length) return res.status(400).json({ error: 'cada ítem necesita jid completo (con @) y messageId', malos: malos.length })
+        if (!getSession(orgId)) return res.status(503).json({ error: 'No session. Call /api/connect first.' })
+
+        const jobs = items.map((it) => ({ jid: it.jid, messageId: it.messageId, jobId: enqueueDelete({ orgId, jid: it.jid, messageId: it.messageId }) }))
+        console.log(`[/delete] ${orgId}: ${jobs.length} borrados encolados`)
+        res.status(202).json({ status: 'queued', count: jobs.length, jobs })
+    } catch (error) {
+        console.error('[/delete] Error:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/**
+ * POST /api/queue/cancel  { orgId }
+ *
+ * Vacía la cola de la sesión: lo pendiente queda `failed` ('cancelado a mano') y no sale. No hace falta que
+ * la sesión esté conectada: sirve justamente para limpiar antes de volver a vincularla.
+ */
+app.post('/api/queue/cancel', requireAuth, (req, res) => {
+    try {
+        const { orgId } = req.body ?? {}
+        if (typeof orgId !== 'string' || !orgId) return res.status(400).json({ error: 'orgId requerido' })
+        const cancelados = cancelPending({ orgId })
+        console.log(`[/api/queue/cancel] ${orgId}: ${cancelados} envíos pendientes cancelados`)
+        res.json({ cancelados })
+    } catch (error) {
+        console.error('[/api/queue/cancel] Error:', error.message)
         res.status(500).json({ error: error.message })
     }
 })
