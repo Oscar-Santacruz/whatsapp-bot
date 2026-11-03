@@ -17,7 +17,8 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'bot-queue-purga-'))
 process.env.SEND_DELAY_MIN_MS = '0'
 process.env.SEND_DELAY_MAX_MS = '0'
 
-const { db } = await import('../lib/db.js')
+const { db, setOrgSettings } = await import('../lib/db.js')
+for (const org of ['org-carrera', 'org-compound', 'org-compound-txt']) setOrgSettings(org, { reenviarRechazos: true })
 const { purgeFinishedPayloads, handleServerRejection, setSocketProvider, PURGE_BATCH_SIZE } = await import('../lib/queue.js')
 
 // Un socket que acepta todo, para los reenvíos que sí prosperan.

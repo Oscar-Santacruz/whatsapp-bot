@@ -13,7 +13,7 @@ process.env.SEND_DELAY_MIN_MS = '0'
 process.env.SEND_DELAY_MAX_MS = '0'
 
 const { db } = await import('../lib/db.js')
-const { enqueueDelete, cancelPending, setSocketProvider } = await import('../lib/queue.js')
+const { enqueueDelete, cancelPending, cancelJob, listQueue, queueSummary, setSocketProvider } = await import('../lib/queue.js')
 
 const llamadas = []
 let conectado = true
@@ -55,4 +55,23 @@ test('cancelar vacía lo pendiente de esa sesión y no toca otras', async () => 
     assert.equal(fila(b).status, 'failed')
     assert.equal(fila(otra).status, 'pending')
     db.prepare(`DELETE FROM outgoing_queue WHERE id = ?`).run(otra)
+})
+
+test('lista la cola de una sesión sin el archivo y cancela un envío suelto', async () => {
+    conectado = false
+    const insertar = db.prepare(`INSERT INTO outgoing_queue (org_id, phone, kind, message, document_base64, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`)
+    const a = Number(insertar.run('org-lista', 'g@g.us', 'text', 'x'.repeat(500), null, Date.now()).lastInsertRowid)
+    const b = Number(insertar.run('org-lista', 'g@g.us', 'image', null, 'QUJD', Date.now()).lastInsertRowid)
+
+    const cola = listQueue('org-lista')
+    assert.deepEqual(cola.map((j) => j.jobId), [a, b])
+    assert.equal(cola[0].message.length, 300)
+    assert.equal('document_base64' in cola[1], false)
+    assert.deepEqual(queueSummary().find((o) => o.orgId === 'org-lista'), { orgId: 'org-lista', pending: 2, sending: 0, oldest: cola[0].createdAt })
+
+    assert.equal(cancelJob({ orgId: 'otra-org', jobId: a }), false)
+    assert.equal(cancelJob({ orgId: 'org-lista', jobId: a }), true)
+    assert.equal(cancelJob({ orgId: 'org-lista', jobId: a }), false)
+    assert.deepEqual(listQueue('org-lista').map((j) => j.jobId), [b])
+    cancelPending({ orgId: 'org-lista' })
 })

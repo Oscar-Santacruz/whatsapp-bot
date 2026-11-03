@@ -15,7 +15,7 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'bot-queue-rechazo-'))
 process.env.SEND_DELAY_MIN_MS = '0'
 process.env.SEND_DELAY_MAX_MS = '0'
 
-const { db } = await import('../lib/db.js')
+const { db, setOrgSettings } = await import('../lib/db.js')
 const { enqueueText, setSocketProvider, handleServerRejection, REJECTION_RESEND_WINDOW_MS } = await import('../lib/queue.js')
 
 const enviados = []
@@ -37,6 +37,7 @@ const esperar = async (cond) => {
 }
 
 test('en un grupo, un rechazo reenvía una vez con las sender keys olvidadas', async () => {
+    setOrgSettings('org', { reenviarRechazos: true })
     const grupo = '120363000000000001@g.us'
     const id = enqueueText({ orgId: 'org', phone: grupo, message: 'CI 1.234.567\nSin reportes.' })
     await esperar(() => fila(id).status === 'sent')
@@ -115,4 +116,17 @@ test('un rechazo de un envío que ya está fallido no lo reencola', async () => 
     const r = await handleServerRejection('org5', sock, { remoteJid: grupo, id: salio, code: '479' })
     assert.equal(r.action, 'ignored')
     assert.equal(fila(id).status, 'failed')
+})
+
+test('con el reenvío apagado para la sesión, un rechazo deja el envío fallido y no sale nada', async () => {
+    const grupo = '120363000000000009@g.us'
+    const id = enqueueText({ orgId: 'org-apagada', phone: grupo, message: 'hola grupo' })
+    await esperar(() => fila(id).status === 'sent')
+    const antes = enviados.length
+
+    const r = await handleServerRejection('org-apagada', sock, { remoteJid: grupo, id: fila(id).sent_message_id, code: '479' })
+    assert.equal(r.action, 'failed')
+    assert.equal(fila(id).status, 'failed')
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(enviados.length, antes)
 })

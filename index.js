@@ -26,6 +26,9 @@ import {
     enqueueStatus,
     enqueueDelete,
     cancelPending,
+    cancelJob,
+    listQueue,
+    queueSummary,
     checkStatusRateLimit,
     setSocketProvider,
     resumeAllWorkers,
@@ -39,7 +42,10 @@ import {
     upsertInboundWebhook,
     getInboundWebhook,
     deleteInboundWebhook,
-    upsertOrgInboundRoute
+    upsertOrgInboundRoute,
+    getOrgSettings,
+    listOrgSettings,
+    setOrgSettings
 } from './lib/db.js'
 import { describeInboundRoute, hasOwnInboundRoute } from './lib/org-inbound-webhook.js'
 import { esOrgIdRegistrable, validarRutaInbound } from './lib/inbound-route.js'
@@ -294,15 +300,22 @@ app.post('/delete', requireAuth, (req, res) => {
 })
 
 /**
- * POST /api/queue/cancel  { orgId }
+ * POST /api/queue/cancel  { orgId, jobId? }
  *
- * Vacía la cola de la sesión: lo pendiente queda `failed` ('cancelado a mano') y no sale. No hace falta que
- * la sesión esté conectada: sirve justamente para limpiar antes de volver a vincularla.
+ * Sin `jobId` vacía la cola de la sesión; con `jobId` cancela solo ese envío. Lo cancelado queda `failed`
+ * ('cancelado a mano') y no sale. No hace falta que la sesión esté conectada: sirve justamente para limpiar
+ * antes de volver a vincularla. Lo que está `sending` en ese momento no se toca.
  */
 app.post('/api/queue/cancel', requireAuth, (req, res) => {
     try {
-        const { orgId } = req.body ?? {}
+        const { orgId, jobId } = req.body ?? {}
         if (typeof orgId !== 'string' || !orgId) return res.status(400).json({ error: 'orgId requerido' })
+        if (jobId !== undefined && jobId !== null) {
+            if (!Number.isInteger(jobId) || jobId <= 0) return res.status(400).json({ error: 'jobId inválido' })
+            const cancelado = cancelJob({ orgId, jobId })
+            console.log(`[/api/queue/cancel] ${orgId}: envío #${jobId} ${cancelado ? 'cancelado' : 'no estaba pendiente'}`)
+            return res.json({ cancelados: cancelado ? 1 : 0 })
+        }
         const cancelados = cancelPending({ orgId })
         console.log(`[/api/queue/cancel] ${orgId}: ${cancelados} envíos pendientes cancelados`)
         res.json({ cancelados })
@@ -310,6 +323,44 @@ app.post('/api/queue/cancel', requireAuth, (req, res) => {
         console.error('[/api/queue/cancel] Error:', error.message)
         res.status(500).json({ error: error.message })
     }
+})
+
+/** GET /api/queue-summary → [{ orgId, pending, sending, oldest }]: cuánto espera por sesión. */
+app.get('/api/queue-summary', requireAuth, (_req, res) => {
+    try {
+        res.json({ orgs: queueSummary() })
+    } catch (error) {
+        console.error('[/api/queue-summary] Error:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/** GET /api/queue/:orgId → los envíos pendientes o saliendo de esa sesión, sin el archivo y con el texto recortado. */
+app.get('/api/queue/:orgId', requireAuth, (req, res) => {
+    try {
+        res.json({ jobs: listQueue(req.params.orgId) })
+    } catch (error) {
+        console.error('[/api/queue] Error:', error.message)
+        res.status(500).json({ error: error.message })
+    }
+})
+
+/** GET /api/org-settings → la configuración de las sesiones que tienen alguna (las demás, todo apagado). */
+app.get('/api/org-settings', requireAuth, (_req, res) => {
+    res.json({ orgs: listOrgSettings() })
+})
+
+app.get('/api/org-settings/:orgId', requireAuth, (req, res) => {
+    res.json(getOrgSettings(req.params.orgId))
+})
+
+/** PUT /api/org-settings/:orgId  { reenviarRechazos: boolean } */
+app.put('/api/org-settings/:orgId', requireAuth, (req, res) => {
+    const { reenviarRechazos } = req.body ?? {}
+    if (typeof reenviarRechazos !== 'boolean') return res.status(400).json({ error: 'reenviarRechazos: boolean' })
+    const settings = setOrgSettings(req.params.orgId, { reenviarRechazos })
+    console.log(`[/api/org-settings] ${req.params.orgId}: reenviar rechazos ${reenviarRechazos ? 'prendido' : 'apagado'}`)
+    res.json(settings)
 })
 
 // "Escribiendo..." en el chat, sin mandar nada. Lo usa el asistente de

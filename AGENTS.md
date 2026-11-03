@@ -119,7 +119,8 @@ Match por intención, no por string literal. Ejemplos en español + inglés:
 
 ## Envíos que WhatsApp rechaza (lib/queue.js, `handleServerRejection`)
 - `sendMessage` vuelve cuando el mensaje sale del socket, no cuando el servidor lo acepta, y Baileys emite el eco propio enseguida: el envío queda `sent` y el panel lo muestra como mandado aunque después WhatsApp lo rechace y no le llegue a nadie. El rechazo llega como `messages.update` con `status: ERROR` y el código en `messageStubParameters` (479 en grupos: sender key o sesión vieja de algún dispositivo).
-- **Solo cuenta un rechazo que llega a los pocos minutos** (`REJECTION_RESEND_WINDOW_MS`, 10 min desde `sent_at`) de un envío `sent`. Uno más viejo, o de un envío que no está `sent`, se loguea (`rechazo tardío de #N …: no se reenvía`) y no cambia nada. Al reconectar, WhatsApp puede volver a mandar ERROR de mensajes de hace días: el 03/11/2026, en ROWILL, eso reencoló 85 textos del 27/10 y salieron otra vez a 49 grupos de choferes (los textos no dependen del archivo purgado, así que nada los frenaba).
+- **El reenvío es opt-in por sesión**: `org_settings.reenviar_rechazos` en `bot.db` (sin fila = apagado), que se prende y apaga desde el admin de flota (`GET/PUT /api/org-settings/:orgId`). Apagado, un rechazo deja el envío `failed` y no sale nada más.
+- **Solo cuenta un rechazo que llega a los pocos minutos** (`REJECTION_RESEND_WINDOW_MS`, 5 min desde `sent_at`) de un envío `sent`. Uno más viejo, o de un envío que no está `sent`, se loguea (`rechazo tardío de #N …: no se reenvía`) y no cambia nada. Al reconectar, WhatsApp puede volver a mandar ERROR de mensajes de hace días: el 03/11/2026, en ROWILL, eso reencoló 85 textos del 27/10 y salieron otra vez a 49 grupos de choferes (los textos no dependen del archivo purgado, así que nada los frenaba).
 - Ese evento marca el envío `failed` con `rechazado por WhatsApp (<código>)` y lo loguea. En un grupo, la primera vez olvida la `sender-key-memory` del grupo y lo reencola (`rejected_resends`), así Baileys reparte la sender key de nuevo a todos los dispositivos. El original no le llegó a nadie: el reenvío no duplica (el panel sí ve un segundo eco con otro id).
 
 ## Memoria y arranque
@@ -134,4 +135,5 @@ Match por intención, no por string literal. Ejemplos en español + inglés:
 
 ## Borrar mensajes y vaciar la cola
 - `POST /delete` `{ orgId, items: [{ jid, messageId }] }` (hasta 200): borra para todos mensajes propios ya enviados. Cada ítem es un envío `kind = 'delete'` de la cola (misma pausa anti-ban, sin presencia ni resolución del número: `jid` tiene que ser el chat exacto). Devuelve un `jobId` por ítem para `GET /api/job/:jobId`. WhatsApp solo deja borrar para todos dentro de su ventana (unos 2 días).
-- `POST /api/queue/cancel` `{ orgId }`: lo `pending` de la sesión queda `failed` con `cancelado a mano`. No exige la sesión conectada: es para limpiar antes de volver a vincularla.
+- `POST /api/queue/cancel` `{ orgId, jobId? }`: sin `jobId` lo `pending` de la sesión queda `failed` con `cancelado a mano`; con `jobId`, solo ese envío. No exige la sesión conectada: es para limpiar antes de volver a vincularla.
+- `GET /api/queue-summary` (cuánto espera por sesión) y `GET /api/queue/:orgId` (los `pending`/`sending`, sin el archivo y con el texto recortado a 300): los usa la pantalla de la cola del admin de flota.
