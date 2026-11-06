@@ -30,6 +30,10 @@ dispara el deploy solo. Para saltarlo en un commit (docs, etc), incluir
 
 No hay paso de build (`npm start` directo desde `index.js`).
 
+### Oracle (instancia nueva, en migración)
+- El contenedor `whatsapp-bot-nuevo` en el server Oracle se despliega solo con `app-cd@whatsapp-bot-nuevo.timer`: toma el último commit de `main` **si vino de una PR mergeada** y el workflow `ci.yml` (jobs `Test` y `Build`, en `oracle-ci`) pasó. Un push directo a `main` lo despliega Render pero **no** Oracle: los cambios van por PR.
+- El deploy es `deploy-single` (una sola instancia: para el contenedor viejo y después arranca el nuevo, nunca dos con la misma sesión). Si `/health` no vuelve con al menos las mismas sesiones conectadas, vuelve solo a la imagen anterior. Rollback a mano: `sudo deploy-single whatsapp-bot-nuevo rollback`. Detalle en el repo `oracle-server`.
+
 ## Reglas de commits
 - Conventional commits (`feat:`, `fix:`, `chore:`, etc) con scope cuando aplique (`feat(queue): ...`).
 - NO usar `--no-verify`, NO agregar `Co-Authored-By`, NO amend salvo pedido explícito.
