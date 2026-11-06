@@ -137,3 +137,72 @@ Match por intención, no por string literal. Ejemplos en español + inglés:
 - `POST /delete` `{ orgId, items: [{ jid, messageId }] }` (hasta 200): borra para todos mensajes propios ya enviados. Cada ítem es un envío `kind = 'delete'` de la cola (misma pausa anti-ban, sin presencia ni resolución del número: `jid` tiene que ser el chat exacto). Devuelve un `jobId` por ítem para `GET /api/job/:jobId`. WhatsApp solo deja borrar para todos dentro de su ventana (unos 2 días).
 - `POST /api/queue/cancel` `{ orgId, jobId? }`: sin `jobId` lo `pending` de la sesión queda `failed` con `cancelado a mano`; con `jobId`, solo ese envío. No exige la sesión conectada: es para limpiar antes de volver a vincularla.
 - `GET /api/queue-summary` (cuánto espera por sesión) y `GET /api/queue/:orgId` (los `pending`/`sending`, sin el archivo y con el texto recortado a 300): los usa la pantalla de la cola del admin de flota.
+
+## Mudar una sesión a otro bot sin desvincular el número (lib/whatsapp.js, lib/session-transfer.js)
+- **Código dormido**: nada lo llama solo. Lo usa el operador, sesión por sesión, para pasar sesiones de Render a Oracle.
+- Regla de oro:
+  - **nunca dos bots con la misma sesión activa** (riesgo de ban);
+  - **nunca `logout`**: desvincula el teléfono y la copia queda inservible.
+- Orden de la mudanza:
+  1. `release` en el origen;
+  2. copiar `released_<orgId>_<ts>/` al destino como `auth_info_baileys_<orgId>/`;
+  3. `load` en el destino;
+  4. `export` en el origen, página por página;
+  5. `import` de cada página en el destino.
+
+### `POST /api/session/release` `{ orgId }`
+- Solo suelta una sesión conectada. Si no, responde `404 NO_SESSION` o `409 NOT_CONNECTED`.
+- Pasos:
+  1. Frena la cola de la org y espera al envío en curso, que sale por el socket todavía abierto. Si no termina en 60 s (`RELEASE_QUEUE_TIMEOUT_MS`), el release se cancela con `409 BUSY` y la sesión sigue como estaba.
+  2. Pasa lo `pending` a `released`, un estado que el worker no lee. Si la sesión se cayó mientras esperaba, responde `409 NOT_CONNECTED` y esos envíos vuelven a `pending`.
+  3. Saca `saveCreds` de `creds.update` y cierra con `sock.end()`.
+  4. Con el socket cerrado, escribe las credenciales una última vez y pasa a `released` lo que entró por `/send` mientras cerraba.
+  5. Renombra la carpeta a `released_<orgId>_<ts>`, así un reinicio no la vuelve a cargar.
+- Si el rename falla, responde `500 RENAME_FAILED` y deja un `.released` adentro de la carpeta. `loadExistingSessions` saltea las carpetas con esa marca.
+- La org queda marcada como soltada en memoria. Mientras dure esa marca no la reconectan:
+  - el reconnect del `close`;
+  - `/api/connect` (`409 RELEASED`);
+  - `/api/pair` (`409 RELEASED`).
+- Un `/logout` de la org saca la marca y destraba su cola, que sale con el próximo envío: desvincular a propósito la libera para vincularla de nuevo. Durante un release, `/logout` responde `409`.
+- Tras un reinicio la marca se pierde y lo que protege es el rename: un `/api/connect` abriría una sesión nueva sin vincular (QR) y no tocaría la copia.
+
+### `GET /api/session/export/:orgId?after=&limit=`
+- Responde:
+  ```
+  { orgId, inboundRoute: { url, secret } | null, settings: { reenviarRechazos } | null,
+    batches, queue, nextAfter, routeSource }
+  ```
+- `queue` son los `released`: una sesión que no se soltó no exporta envíos.
+- Un envío que cita a otro que ya salió por el origen viaja con `quoted_message_id` (el id de WhatsApp) en vez de `quoted_job_id`.
+- Va por páginas de hasta 50 envíos y hasta 15 MB de archivos (siempre al menos uno), porque cada envío puede traer el archivo entero y el import entra por `express.json` con tope de 50 MB. Se pide con `after=<nextAfter>` hasta que `nextAfter` venga `null`.
+- **El secret de la ruta solo viaja en esta respuesta** (`Cache-Control: no-store`). No se loguea.
+- Con `routeSource: 'env'` la ruta sale de `ORG_INBOUND_ROUTES` y no viaja en el export: hay que cargarla en el env del destino. Si no, la org cae al default (flota) en silencio.
+
+### `POST /api/session/import` `{ orgId, data }`
+- Responde `409` si la sesión no está conectada en este bot: primero va el `load`. Una cola sin socket la quemaría el worker (4 reintentos y `failed`).
+- Escribe todo o nada, siempre con el `orgId` del parámetro. `data.orgId` tiene que coincidir.
+- La ruta pasa por `validarRutaInbound` (https, sin host local).
+- Los envíos:
+  - entran `pending`, con ids nuevos y `attempts = 0`;
+  - `kind` sale de la lista conocida, y `metadata_json` y `status_options` tienen que ser JSON;
+  - un `quoted_job_id` a otro envío ya importado se traduce al id nuevo; uno que apunta afuera se anula.
+- Cada envío importado queda en `imported_jobs` (org, id y `created_at` de origen). Repetir el import, aunque la cola ya haya salido, no manda nada dos veces. Responde `{ queued, skipped }`.
+- Los batches entran con sus contadores, y el callback a flota lo dispara este bot con el último envío. Sus `results` solo listan los envíos que pasaron por acá. En el origen el batch queda abierto y no avisa.
+- Al terminar arranca el worker de la org.
+
+### `POST /api/session/load` `{ orgId }`
+- Conecta la carpeta copiada sin tocar las otras sesiones. Espera hasta 25 s a que abra y responde `{ connected }`.
+- Errores:
+  - sin `creds.me` en `auth_info_baileys_<orgId>/`: `404 NO_AUTH`, y no abre socket (no hay QR);
+  - la org ya está cargada: `409 ALREADY_LOADED`.
+- Saca la marca de soltada y la de `.released`, y vuelve a prender la cola.
+- No revive los `released` que hayan quedado: esos son del otro bot.
+- Si el handshake tira un error Noise, el `uncaughtException` purga la copia, como en el arranque. El original sigue como `released_…` en el origen.
+
+### Lo que queda en el origen
+- `message_store`, `contacts` e `inbound_webhooks` no viajan. En el destino, citar o reenviar (replay) un mensaje anterior a la mudanza no lo encuentra, y la audiencia "todos mis contactos" arranca vacía hasta que Baileys sincronice.
+- Los `jobId` que devolvió el origen no existen en el destino: `GET /api/job/:jobId` del origen los muestra `released`.
+- Esas filas siguen ahí con su archivo, porque la purga solo limpia `sent` y `failed`. Un release posterior de la misma org las vuelve a exportar: el destino las saltea por `imported_jobs`, pero un destino con otra base (o sin esa tabla) las mandaría de nuevo.
+
+### Volver atrás
+Es el mismo camino al revés: `release` en el destino y `load` en el origen, con la carpeta renombrada a `auth_info_baileys_<orgId>`.

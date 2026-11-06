@@ -12,8 +12,12 @@ import {
     purgeCorruptSession,
     requestPairingSession,
     hasLinkedNumber,
-    replayStoredMessage
+    replayStoredMessage,
+    isReleased,
+    releaseSession,
+    loadSession
 } from './lib/whatsapp.js'
+import { exportSessionData, importSessionData, EXPORT_PAGE_MAX } from './lib/session-transfer.js'
 import {
     enqueueText,
     enqueueDocument,
@@ -33,7 +37,8 @@ import {
     setSocketProvider,
     resumeAllWorkers,
     getJobStatus,
-    startPayloadPurge
+    startPayloadPurge,
+    kickOrgQueue
 } from './lib/queue.js'
 import { createBatch, getBatch } from './lib/batch.js'
 import { listStoredMessages, getStoredWaMessage } from './lib/store.js'
@@ -98,10 +103,13 @@ const requireAuth = (req, res, next) => {
     next()
 }
 
+const RELEASED_MSG = 'La sesión se soltó a otro bot. Para traerla de vuelta: POST /api/session/load.'
+
 app.post('/api/connect', requireAuth, async (req, res) => {
     try {
         const { orgId } = req.body
         if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+        if (isReleased(orgId)) return res.status(409).json({ code: 'RELEASED', error: RELEASED_MSG })
 
         const existing = getSession(orgId)
         if (existing) {
@@ -133,6 +141,7 @@ app.post('/api/pair', requireAuth, async (req, res) => {
     try {
         const { orgId, phone } = req.body
         if (!orgId) return res.status(400).json({ error: 'Missing orgId' })
+        if (isReleased(orgId)) return res.status(409).json({ code: 'RELEASED', error: RELEASED_MSG })
 
         const digits = String(phone ?? '').replace(/\D/g, '')
         if (digits.length < 8 || digits.length > 15) {
@@ -1049,6 +1058,84 @@ app.get('/api/org-inbound-routes/:orgId', requireAuth, (req, res) => {
     }
 })
 
+// ── Mudanza de una sesión a otro bot, sin desvincular el número ──────────────
+//
+// release (origen) → copiar la carpeta released_<orgId>_<ts> como auth_info_baileys_<orgId> → load (destino)
+// → export (origen) → import (destino). Nada de esto corre solo: lo llama el operador, sesión por sesión.
+// Nunca hay dos bots con la sesión activa: release cierra antes de que el otro cargue.
+
+const STATUS_POR_CODIGO = { NO_SESSION: 404, NOT_CONNECTED: 409, NO_AUTH: 404, ALREADY_LOADED: 409, BUSY: 409, RENAME_FAILED: 500 }
+// El mismo criterio que getAuthPath (lib/whatsapp.js): sin `/` ni `..`, el orgId arma rutas de disco.
+const ORG_ID_SESION = /^[A-Za-z0-9_-]{1,64}$/
+const orgIdDelBody = (req) => (typeof req.body?.orgId === 'string' ? req.body.orgId : '')
+const responderErrorSesion = (res, ruta, orgId, e) => {
+    const status = STATUS_POR_CODIGO[e.code] ?? 500
+    console.error(`[${ruta} ${orgId}] ${e.message}`)
+    res.status(status).json({ code: e.code ?? 'ERROR', error: e.message })
+}
+
+app.post('/api/session/release', requireAuth, async (req, res) => {
+    const orgId = orgIdDelBody(req)
+    if (!ORG_ID_SESION.test(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+    try {
+        res.status(200).json({ ok: true, ...(await releaseSession(orgId)) })
+    } catch (e) {
+        responderErrorSesion(res, '/api/session/release', orgId, e)
+    }
+})
+
+// Lleva el secret de la ruta registrada: va solo en esta respuesta, nunca al log. La cola sale por páginas
+// (`?after=<nextAfter>`): cada envío puede traer un archivo entero y el contenedor tiene 512 MB.
+// `routeSource` avisa si la ruta de la org sale de ORG_INBOUND_ROUTES: esa no viaja, hay que cargarla en el
+// env del otro bot o la org cae al destino por defecto.
+app.get('/api/session/export/:orgId', requireAuth, (req, res) => {
+    const { orgId } = req.params
+    if (!ORG_ID_SESION.test(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+    const after = Number.parseInt(req.query.after ?? '0', 10)
+    const limit = Number.parseInt(req.query.limit ?? String(EXPORT_PAGE_MAX), 10)
+    if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1) {
+        return res.status(400).json({ error: 'Invalid after/limit' })
+    }
+    try {
+        res.set('Cache-Control', 'no-store')
+        res.status(200).json({ ...exportSessionData(orgId, { after, limit }), routeSource: describeInboundRoute(orgId).source })
+    } catch (e) {
+        console.error(`[/api/session/export ${orgId}] ${e.message}`)
+        res.status(500).json({ error: 'No se pudo leer la base' })
+    }
+})
+
+app.post('/api/session/import', requireAuth, (req, res) => {
+    const orgId = orgIdDelBody(req)
+    if (!ORG_ID_SESION.test(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+    try {
+        // Primero load: una cola importada sin la sesión conectada la quemaría el primer worker que arranque
+        // (4 reintentos sin socket y `failed`).
+        if (!getSession(orgId)?.isConnected) {
+            return res.status(409).json({ code: 'NOT_CONNECTED', error: 'Cargá y conectá la sesión (POST /api/session/load) antes del import.' })
+        }
+        const r = importSessionData(orgId, req.body.data)
+        if (!r.ok) return res.status(r.status).json({ error: r.error })
+        kickOrgQueue(orgId)
+        console.log(`[/api/session/import ${orgId}] ruta=${r.route} settings=${r.settings} envíos=${r.queued} repetidos=${r.skipped}`)
+        res.status(200).json(r)
+    } catch (e) {
+        console.error(`[/api/session/import ${orgId}] ${e.message}`)
+        res.status(500).json({ error: 'No se pudo escribir la base' })
+    }
+})
+
+app.post('/api/session/load', requireAuth, async (req, res) => {
+    const orgId = orgIdDelBody(req)
+    if (!ORG_ID_SESION.test(orgId)) return res.status(400).json({ error: 'Invalid orgId' })
+    try {
+        const { connected } = await loadSession(orgId)
+        res.status(200).json({ ok: true, connected })
+    } catch (e) {
+        responderErrorSesion(res, '/api/session/load', orgId, e)
+    }
+})
+
 app.post('/logout', requireAuth, async (req, res) => {
     try {
         const { orgId } = req.body
@@ -1059,7 +1146,7 @@ app.post('/logout', requireAuth, async (req, res) => {
         res.status(200).json({ success: true, message: 'Logged out.' })
     } catch (error) {
         console.error(`[/logout] Error:`, error.message)
-        res.status(500).json({ error: error.message })
+        res.status(error.code === 'BUSY' ? 409 : 500).json({ error: error.message })
     }
 })
 
