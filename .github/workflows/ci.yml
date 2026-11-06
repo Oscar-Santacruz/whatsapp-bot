@@ -21,6 +21,7 @@ jobs:
   test:
     name: Test
     runs-on: oracle-ci
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,6 +34,7 @@ jobs:
   build:
     name: Build
     runs-on: oracle-ci
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,4 +44,4 @@ jobs:
       - run: npm ci --omit=optional
       # Sin paso de build: se chequea la sintaxis y que los módulos carguen.
       - run: for f in index.js lib/*.js; do node --check "$f"; done
-      - run: node -e "Promise.all(require('fs').readdirSync('lib').filter(f => f.endsWith('.js')).map(f => import('./lib/' + f))).then(() => console.log('lib ok'))"
+      - run: node -e "Promise.all(require('fs').readdirSync('lib').filter(f => f.endsWith('.js')).map(f => import('./lib/' + f))).then(() => { console.log('lib ok'); process.exit(0) }, e => { console.error(e); process.exit(1) })"
