@@ -1,0 +1,47 @@
+name: CI
+
+# En PRs, en main y a mano. Main se verifica para el CD en Oracle: el watcher de prod
+# (app-cd@whatsapp-bot-nuevo) solo despliega commits de main que vienen de una PR mergeada
+# y tienen este workflow (jobs Test y Build) en verde.
+# Corre en los runners self-hosted de oracle-dev (pool oracle-ci de runner-up).
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: oracle-ci
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --omit=optional
+      - run: npm test
+
+  build:
+    name: Build
+    runs-on: oracle-ci
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --omit=optional
+      # Sin paso de build: se chequea la sintaxis y que los módulos carguen.
+      - run: for f in index.js lib/*.js; do node --check "$f"; done
+      - run: node -e "Promise.all(require('fs').readdirSync('lib').filter(f => f.endsWith('.js')).map(f => import('./lib/' + f))).then(() => { console.log('lib ok'); process.exit(0) }, e => { console.error(e); process.exit(1) })"
