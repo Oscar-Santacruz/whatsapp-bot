@@ -34,7 +34,15 @@ jobs:
   build:
     name: Build
     runs-on: oracle-ci
-    timeout-minutes: 10
+    timeout-minutes: 20
+    # Además de los chequeos, arma la imagen de producción en el BuildKit de oracle-dev.
+    # En push a main la sube al registry de oracle-dev y deja el digest en una anotación "image":
+    # app-cd despliega solo ese digest, leído del job Build del run verificado. En PRs solo compila.
+    env:
+      BUILDKIT_VERSION: v0.34.2
+      BUILDKIT_SHA256: a4ad483a33b2f1544c5ccce1c5956c559e1a6e84b8bf6cedd847d695885237a3
+      IMAGE: whatsapp-bot-nuevo
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,3 +53,19 @@ jobs:
       # Sin paso de build: se chequea la sintaxis y que los módulos carguen.
       - run: for f in index.js lib/*.js; do node --check "$f"; done
       - run: node -e "Promise.all(require('fs').readdirSync('lib').filter(f => f.endsWith('.js')).map(f => import('./lib/' + f))).then(() => { console.log('lib ok'); process.exit(0) }, e => { console.error(e); process.exit(1) })"
+      - name: Instalar buildctl
+        run: |
+          f="buildkit-$BUILDKIT_VERSION.linux-arm64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/moby/buildkit/releases/download/$BUILDKIT_VERSION/$f"
+          echo "$BUILDKIT_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" bin/buildctl
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build de la imagen
+        run: |
+          buildctl --addr tcp://172.17.0.1:1234 build             --frontend dockerfile.v0 --local context=. --local dockerfile=.             --output "type=image,name=registry:5000/$IMAGE:$GITHUB_SHA,push=$PUSH"             --metadata-file "$RUNNER_TEMP/meta.json"
+      - name: Publicar el digest
+        if: env.PUSH == 'true'
+        run: |
+          digest=$(grep -oE '"containerimage.digest": *"sha256:[0-9a-f]{64}"' "$RUNNER_TEMP/meta.json" | grep -oE 'sha256:[0-9a-f]{64}')
+          test -n "$digest"
+          echo "::notice title=image::$IMAGE@$digest"
